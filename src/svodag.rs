@@ -161,8 +161,6 @@ impl Svodag {
         self.reference_counts[a_index] -= 1;
 
         if self.reference_counts[a_index] == 0 {
-            println!("Freeing: {node_ref}");
-
             self.free_indices.push(node_ref);
             self.hash_map.remove(&self.deref(&node_ref).clone());
             let b_index = self.reference_counts.len() - 1;
@@ -174,8 +172,6 @@ impl Svodag {
             let b_ref = self.indices.iter().position(|&x| x == b_index).unwrap();
             self.indices[node_ref.0] = usize::MAX;
             self.indices[b_ref] = a_index;
-
-            // let node = &mut self.nodes[a_index];
 
             node.child_mask = 0;
             let children = std::mem::take(&mut node.children);
@@ -239,10 +235,8 @@ impl Svodag {
                     let index = node.index_of_morton(morton);
                     node.children[index] = new_child;
                 } else {
-                    node.children.insert(
-                        (node.child_mask >> morton).count_ones() as usize,
-                        new_child,
-                    );
+                    node.children
+                        .insert((node.child_mask >> morton).count_ones() as usize, new_child);
                     node.child_mask |= 1 << morton;
                 }
 
@@ -420,8 +414,8 @@ impl fmt::Display for Svodag {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
     use glam::uvec3;
+    use proptest::prelude::*;
     use std::collections::HashSet;
 
     proptest! {
@@ -434,13 +428,13 @@ mod tests {
         ) {
             let size = 1 << depth;
             let pos = uvec3(x % size, y % size, z % size);
-            
+
             let mut dag = Svodag::new(depth);
             let root = dag.insert_mutate(None, pos, depth);
-            
+
             // Verify get returns the depth (meaning found)
             prop_assert_eq!(dag.get(&root, pos), Some(depth));
-            
+
             // Clean up not strictly needed for test correctness but good for sanity
             dag.release(root);
         }
@@ -454,14 +448,14 @@ mod tests {
         ) {
             let size = 1 << depth;
             let pos = uvec3(x % size, y % size, z % size);
-            
+
             let mut dag = Svodag::new(depth);
             let root = dag.insert_mutate(None, pos, depth);
-            
+
             prop_assert!(dag.get(&root, pos).is_some());
-            
+
             let root_after = dag.remove_mutate(Some(root), pos, depth);
-            
+
             // After removing the only node, root should be None
             prop_assert!(root_after.is_none());
         }
@@ -476,20 +470,20 @@ mod tests {
             for (x, y, z) in &points {
                  unique_points.insert(uvec3(x % size, y % size, z % size));
             }
-            
+
             let mut dag = Svodag::new(depth);
             let mut root = None;
-            
+
             for &p in &unique_points {
                 root = Some(dag.insert_mutate(root, p, depth));
             }
-            
+
             let root_ref = root.expect("Root should exist");
-            
+
             for &p in &unique_points {
                 prop_assert!(dag.get(&root_ref, p).is_some(), "Point {:?} missing", p);
             }
-            
+
              // Verify points NOT in the set return None (probabilistic check)
             for _ in 0..10 {
                 let x = rand::random::<u32>() % size;
@@ -500,7 +494,7 @@ mod tests {
                     prop_assert!(dag.get(&root_ref, p).is_none(), "Point {:?} should not be present", p);
                 }
             }
-            
+
             dag.release(root_ref);
         }
 
@@ -511,7 +505,7 @@ mod tests {
              let size = 1 << depth;
              let mut dag = Svodag::new(depth);
              let mut root = None;
-             
+
              for x in 0..size {
                  for y in 0..size {
                      for z in 0..size {
@@ -519,14 +513,14 @@ mod tests {
                      }
                  }
              }
-             
+
              let root_ref = root.unwrap();
              let root_node = dag.deref(&root_ref);
-             
+
              // If full, the root node should be a leaf
              prop_assert!(root_node.leaf, "Root should be a leaf when fully filled");
              prop_assert_eq!(root_node.child_mask, 0, "Leaf node should have empty child mask");
-             
+
              dag.release(root_ref);
         }
     }
