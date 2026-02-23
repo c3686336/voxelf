@@ -7,3 +7,7 @@ edition = "2024"
 crabtime = "*"
 anyhow = "*"
 glam = "*"
+
+[dev-dependencies]
+proptest = "1.10.0"
+rand = "0.10.0"

@@ -416,3 +416,118 @@ impl fmt::Display for Svodag {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use glam::uvec3;
+    use std::collections::HashSet;
+
+    proptest! {
+        #[test]
+        fn test_insert_get(
+            depth in 1u32..5,
+            x in 0u32..100,
+            y in 0u32..100,
+            z in 0u32..100,
+        ) {
+            let size = 1 << depth;
+            let pos = uvec3(x % size, y % size, z % size);
+            
+            let mut dag = Svodag::new(depth);
+            let root = dag.insert_mutate(None, pos, depth);
+            
+            // Verify get returns the depth (meaning found)
+            prop_assert_eq!(dag.get(&root, pos), Some(depth));
+            
+            // Clean up not strictly needed for test correctness but good for sanity
+            dag.release(root);
+        }
+
+        #[test]
+        fn test_insert_remove(
+            depth in 1u32..5,
+            x in 0u32..100,
+            y in 0u32..100,
+            z in 0u32..100,
+        ) {
+            let size = 1 << depth;
+            let pos = uvec3(x % size, y % size, z % size);
+            
+            let mut dag = Svodag::new(depth);
+            let root = dag.insert_mutate(None, pos, depth);
+            
+            prop_assert!(dag.get(&root, pos).is_some());
+            
+            let root_after = dag.remove_mutate(Some(root), pos, depth);
+            
+            // After removing the only node, root should be None
+            prop_assert!(root_after.is_none());
+        }
+
+        #[test]
+        fn test_multiple_insert_consistency(
+            depth in 1u32..4,
+            points in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<u32>()), 1..20)
+        ) {
+            let size = 1 << depth;
+            let mut unique_points = HashSet::new();
+            for (x, y, z) in &points {
+                 unique_points.insert(uvec3(x % size, y % size, z % size));
+            }
+            
+            let mut dag = Svodag::new(depth);
+            let mut root = None;
+            
+            for &p in &unique_points {
+                root = Some(dag.insert_mutate(root, p, depth));
+            }
+            
+            let root_ref = root.expect("Root should exist");
+            
+            for &p in &unique_points {
+                prop_assert!(dag.get(&root_ref, p).is_some(), "Point {:?} missing", p);
+            }
+            
+             // Verify points NOT in the set return None (probabilistic check)
+            for _ in 0..10 {
+                let x = rand::random::<u32>() % size;
+                let y = rand::random::<u32>() % size;
+                let z = rand::random::<u32>() % size;
+                let p = uvec3(x, y, z);
+                if !unique_points.contains(&p) {
+                    prop_assert!(dag.get(&root_ref, p).is_none(), "Point {:?} should not be present", p);
+                }
+            }
+            
+            dag.release(root_ref);
+        }
+
+        #[test]
+        fn test_fill_collapse(
+             depth in 1u32..3 // keep small for perf
+        ) {
+             let size = 1 << depth;
+             let mut dag = Svodag::new(depth);
+             let mut root = None;
+             
+             for x in 0..size {
+                 for y in 0..size {
+                     for z in 0..size {
+                         root = Some(dag.insert_mutate(root, uvec3(x, y, z), depth));
+                     }
+                 }
+             }
+             
+             let root_ref = root.unwrap();
+             let root_node = dag.deref(&root_ref);
+             
+             // If full, the root node should be a leaf
+             prop_assert!(root_node.leaf, "Root should be a leaf when fully filled");
+             prop_assert_eq!(root_node.child_mask, 0, "Leaf node should have empty child mask");
+             
+             dag.release(root_ref);
+        }
+    }
+}
