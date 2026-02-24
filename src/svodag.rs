@@ -1,4 +1,5 @@
 use glam::UVec3;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
@@ -117,7 +118,7 @@ impl fmt::Display for SvodagQueryResult {
 pub struct Svodag {
     pub depth: u32,
     nodes: Vec<SvoNode>,
-    reference_counts: Vec<u32>,
+    reference_counts: RefCell<Vec<u32>>,
     indices: Vec<usize>,
     free_indices: Vec<SvoNodeRef>,
     hash_map: HashMap<SvoNode, SvoNodeRef>,
@@ -129,7 +130,7 @@ impl Svodag {
         Self {
             depth,
             nodes: Vec::new(),
-            reference_counts: Vec::new(),
+            reference_counts: RefCell::new(Vec::new()),
             indices: Vec::new(),
             free_indices: Vec::new(),
             hash_map: HashMap::new(),
@@ -162,39 +163,41 @@ impl Svodag {
         result
     }
 
+    fn increase_refcount(&self, node: &SvoNodeRef) {
+        self.reference_counts.borrow_mut()[self.to_index(node)] += 1;
+    }
+
     fn acquire(&mut self, node: SvoNode) -> SvoNodeRef {
         let result;
         if let Some(value) = self.hash_map.get(&node) {
-            let index = self.to_index(value);
-            self.reference_counts[index] += 1;
+            self.increase_refcount(value);
             result = *value;
         } else {
             result = self.new_ref();
             self.hash_map.insert(node.clone(), result);
-            self.reference_counts.push(1);
+            self.reference_counts.borrow_mut().push(1);
             self.nodes.push(node);
         }
 
         result
     }
 
-    pub fn clone_node_ref(&mut self, node_ref: &SvoNodeRef) -> SvoNodeRef {
-        let index = self.to_index(node_ref);
-        self.reference_counts[index] += 1;
+    pub fn clone_node_ref(&self, node_ref: &SvoNodeRef) -> SvoNodeRef {
+        self.increase_refcount(node_ref);
 
         *node_ref
     }
 
     pub fn release(&mut self, node_ref: SvoNodeRef) {
         let a_index = self.to_index(&node_ref);
-        self.reference_counts[a_index] -= 1;
+        self.reference_counts.borrow_mut()[a_index] -= 1;
 
-        if self.reference_counts[a_index] == 0 {
+        if self.reference_counts.borrow_mut()[a_index] == 0 {
             self.free_indices.push(node_ref);
             self.hash_map.remove(&self.deref(&node_ref).clone());
-            let b_index = self.reference_counts.len() - 1;
-            self.reference_counts.swap(a_index, b_index);
-            self.reference_counts.pop();
+            let b_index = self.reference_counts.borrow().len() - 1;
+            self.reference_counts.borrow_mut().swap(a_index, b_index);
+            self.reference_counts.borrow_mut().pop();
             self.nodes.swap(a_index, b_index);
             let mut node = self.nodes.pop().unwrap();
 
@@ -220,17 +223,15 @@ impl Svodag {
     pub fn commit(&mut self, node: SvoNode) -> SvoNodeRef {
         let result;
         if let Some(value) = self.hash_map.get(&node) {
-            let index = self.to_index(value);
-            self.reference_counts[index] += 1;
+            self.increase_refcount(value);
             result = *value;
         } else {
             result = self.new_ref();
             self.hash_map.insert(node.clone(), result);
             for child in &node.children {
-                let index = self.to_index(child);
-                self.reference_counts[index] += 1;
+                self.increase_refcount(child);
             }
-            self.reference_counts.push(1);
+            self.reference_counts.borrow_mut().push(1);
             self.nodes.push(node);
         }
 
@@ -360,7 +361,7 @@ impl Svodag {
                         node.children.push(empty_leaf_node);
                     }
                     let index = self.to_index(&empty_leaf_node);
-                    self.reference_counts[index] += 7;
+                    self.reference_counts.borrow_mut()[index] += 7;
 
                     node.child_mask = 0b11111111 - (1 << morton);
 
@@ -431,7 +432,9 @@ impl fmt::Display for Svodag {
                 writeln!(
                     f,
                     "reference: {} refcount: {}\n{}",
-                    i, self.reference_counts[self.indices[i]], self.nodes[self.indices[i]]
+                    i,
+                    self.reference_counts.borrow()[self.indices[i]],
+                    self.nodes[self.indices[i]]
                 )?;
             }
         }
