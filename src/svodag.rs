@@ -84,6 +84,35 @@ impl SvoNode {
     }
 }
 
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+pub enum SvodagQueryResult {
+    Some { depth: u32 },
+    None { depth: u32 },
+}
+
+impl SvodagQueryResult {
+    pub fn is_some(&self) -> bool {
+        matches!(self, SvodagQueryResult::Some { depth })
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self, SvodagQueryResult::None { depth })
+    }
+
+    pub fn depth(&self) -> u32 {
+        match self {
+            SvodagQueryResult::None { depth } => *depth,
+            SvodagQueryResult::Some { depth } => *depth,
+        }
+    }
+}
+
+impl fmt::Display for SvodagQueryResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 #[derive(Debug)]
 pub struct Svodag {
     pub depth: u32,
@@ -373,20 +402,20 @@ impl Svodag {
         }
     }
 
-    fn get_recurse(&self, node_ref: &SvoNodeRef, position: UVec3, level: u32) -> Option<u32> {
+    fn get_recurse(&self, node_ref: &SvoNodeRef, position: UVec3, level: u32) -> SvodagQueryResult {
         let node = self.deref(node_ref);
         if node.leaf {
-            Some(level)
+            SvodagQueryResult::Some { depth: level }
         } else {
             if let Some(child) = node.child_at(position, level, self.depth) {
                 self.get_recurse(child, position, level + 1)
             } else {
-                None
+                SvodagQueryResult::None { depth: level + 1 }
             }
         }
     }
 
-    pub fn get(&self, root: &SvoNodeRef, position: UVec3) -> Option<u32> {
+    pub fn get(&self, root: &SvoNodeRef, position: UVec3) -> SvodagQueryResult {
         self.get_recurse(root, position, 0)
     }
 }
@@ -433,7 +462,7 @@ mod tests {
             let root = dag.insert_mutate(None, pos, depth);
 
             // Verify get returns the depth (meaning found)
-            prop_assert_eq!(dag.get(&root, pos), Some(depth));
+            prop_assert_eq!(dag.get(&root, pos), SvodagQueryResult::Some{depth});
 
             // Clean up not strictly needed for test correctness but good for sanity
             dag.release(root);
