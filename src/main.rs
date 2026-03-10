@@ -1,3 +1,4 @@
+pub mod raymarching;
 pub mod svodag;
 
 use anyhow;
