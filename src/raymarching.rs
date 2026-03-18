@@ -1,6 +1,6 @@
 use crate::{
-    svodag::{SvoNode, SvoNodeRef, SvodagQueryResult},
     Svodag,
+    svodag::{SvoNode, SvoNodeRef, SvodagQueryResult},
 };
 use glam::*;
 
@@ -176,6 +176,171 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             position.z = f32::from_bits(z >> (23 - depth) << (23 - depth));
 
             println!("POP {}", position);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::svodag::Svodag;
+    use glam::{Vec3, uvec3, vec3};
+
+    #[test]
+    fn test_single_voxel_hit() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
+
+        // voxel at (0,0,0) is in [1.0, 1.125]x[1.0, 1.125]x[1.0, 1.125]
+        let origin = vec3(0.5, 1.05, 1.05);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(raymarch(origin, direction, &dag, &root));
+    }
+
+    #[test]
+    fn test_single_voxel_miss() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
+
+        // ray passing above the voxel
+        let origin = vec3(0.5, 1.5, 1.5);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(!raymarch(origin, direction, &dag, &root));
+    }
+
+    #[test]
+    fn test_negative_direction_hit() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
+
+        // voxel at (7,7,7) is in [1.875, 2.0]x[1.875, 2.0]x[1.875, 2.0]
+        let origin = vec3(2.5, 1.95, 1.95);
+        let direction = vec3(-1.0, 0.0, 0.0);
+
+        assert!(raymarch(origin, direction, &dag, &root));
+    }
+
+    #[test]
+    fn test_negative_direction_miss() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
+
+        let origin = vec3(2.5, 1.5, 1.5);
+        let direction = vec3(-1.0, 0.0, 0.0);
+
+        assert!(!raymarch(origin, direction, &dag, &root));
+    }
+
+    #[test]
+    fn test_diagonal_hit() {
+        let depth = 2;
+        let mut dag = Svodag::new(depth);
+        // depth 2, coords 0 to 3.
+        let root = dag.insert_mutate(None, uvec3(1, 1, 1), depth);
+
+        // voxel at (1,1,1) is in [1.25, 1.5]x[1.25, 1.5]x[1.25, 1.5]
+        let origin = vec3(0.5, 0.5, 0.5);
+        let direction = vec3(1.0, 1.0, 1.0).normalize();
+
+        assert!(raymarch(origin, direction, &dag, &root));
+    }
+
+    #[test]
+    fn test_ray_starts_inside_hit() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
+
+        // ray starts inside the [1.0, 1.125] box
+        let origin = vec3(1.05, 1.05, 1.05);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(raymarch(origin, direction, &dag, &root));
+    }
+    #[test]
+    fn test_positive_direction_hit_far() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth); // voxel at [1.875, 2.0]
+
+        let origin = vec3(0.5, 1.95, 1.95);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(raymarch(origin, direction, &dag, &root));
+    }
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn prop_raymarch_hits_inserted_voxel(
+            depth in 1u32..4,
+            x in 0u32..16,
+            y in 0u32..16,
+            z in 0u32..16,
+            tx in 0.1f32..0.9,
+            ty in 0.1f32..0.9,
+            tz in 0.1f32..0.9,
+            ox in -1.0f32..3.0,
+            oy in -1.0f32..3.0,
+            oz in -1.0f32..3.0,
+        ) {
+            let size = 1 << depth;
+            let px = x % size;
+            let py = y % size;
+            let pz = z % size;
+
+            let mut dag = Svodag::new(depth);
+            let root = dag.insert_mutate(None, uvec3(px, py, pz), depth);
+
+            let voxel_min = vec3(
+                1.0 + px as f32 / size as f32,
+                1.0 + py as f32 / size as f32,
+                1.0 + pz as f32 / size as f32,
+            );
+            let voxel_size = 1.0 / size as f32;
+
+            let target = voxel_min + vec3(tx, ty, tz) * voxel_size;
+
+            let mut origin = vec3(ox, oy, oz);
+            // force origin outside the root bounding box [1.0, 2.0]^3
+            if origin.cmpge(Vec3::ONE).all() && origin.cmple(Vec3::ONE * 2.0).all() {
+                 origin.x = 0.5;
+            }
+
+            let direction = (target - origin).normalize();
+
+            // The ray is pointing directly at a point inside the voxel from outside.
+            // It should hit the voxel.
+            prop_assert!(raymarch(origin, direction, &dag, &root));
+        }
+
+        #[test]
+        fn prop_raymarch_misses_when_pointing_away(
+            depth in 1u32..3,
+            x in 0u32..4, y in 0u32..4, z in 0u32..4,
+            ox in -2.0f32..0.5,
+            oy in -2.0f32..0.5,
+            oz in -2.0f32..0.5,
+            dx in -1.0f32..-0.1,
+            dy in -1.0f32..-0.1,
+            dz in -1.0f32..-0.1,
+        ) {
+            let size = 1 << depth;
+            let mut dag = Svodag::new(depth);
+            let root = dag.insert_mutate(None, uvec3(x % size, y % size, z % size), depth);
+
+            let origin = vec3(ox, oy, oz);
+            let direction = vec3(dx, dy, dz).normalize();
+
+            // The ray originates below/left/behind the cube and points away from it.
+            // It should never hit.
+            prop_assert!(!raymarch(origin, direction, &dag, &root));
         }
     }
 }
