@@ -3,7 +3,6 @@ use crate::{
     Svodag,
 };
 use glam::*;
-use std::vec;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RaymarchResult {
@@ -51,7 +50,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
     let t2 = (2.0 * Vec3::ONE - origin) * dir_inv;
 
     let mut tmin = t2.max_element(); // Because of the mirroring
-    let mut tmax = t1.min_element(); // Because of the mirroring
+    let tmax = t1.min_element(); // Because of the mirroring
 
     let mut position = Vec3::ONE;
     let mut parent = svodag.deref(root_ref);
@@ -60,7 +59,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         return true;
     }
 
-    let mut depth = 1;
     let mut idx = 0;
     let mut scale = 0.5;
 
@@ -78,8 +76,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         position.z = 1.5;
     }
 
-    println!("{} {} {}", position, idx, mask);
-
     let mut parent_stack = Vec::<&SvoNode>::new();
     let mut idx_stack = Vec::<usize>::new();
 
@@ -89,7 +85,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
 
         // PUSH
         if (parent.child_mask >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
-            println!("PUSH {}", idx ^ mask);
             let child = svodag.deref(&parent.children[parent.index_of_morton(idx ^ mask)]);
 
             if child.leaf {
@@ -100,28 +95,26 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             idx_stack.push(idx);
 
             parent = child;
-            depth += 1;
             scale *= 0.5;
             let center_t = (position + Vec3::ONE * scale - origin) * dir_inv;
             idx = 0;
             if center_t.x > tmin {
                 idx ^= 4;
-                position.x = 1.5;
+                position.x += scale;
             }
             if center_t.y > tmin {
                 idx ^= 2;
-                position.y = 1.5;
+                position.y += scale;
             }
             if center_t.z > tmin {
                 idx ^= 1;
-                position.z = 1.5;
+                position.z += scale;
             }
-            tmax = tmax_current_cube;
+
+            println!("PUSH {}", position);
 
             continue;
         }
-
-        println!("a {}", position);
 
         // ADVANCE
         let mut step_mask = 0;
@@ -142,7 +135,8 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         tmin = tmax_current_cube;
 
         idx ^= step_mask;
-        println!("b {} {} {}", position, idx ^ mask, step_mask);
+
+        println!("ADVANCE {}", position);
 
         // POP
         if (idx & step_mask) != 0
@@ -159,14 +153,11 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
                 diff_bits |= position.z.to_bits() ^ (position.z + scale).to_bits();
             }
 
-            println!("c {}", position);
-
             if position.cmple(Vec3::ONE).any() {
                 return false;
             }
 
-            depth = (diff_bits << 9).leading_zeros() + 1;
-            println!("Restoring to {}", depth);
+            let depth = (diff_bits << 9).leading_zeros() + 1;
             scale = (-(depth as f32)).exp2();
 
             let x = position.x.to_bits();
@@ -183,6 +174,8 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             position.x = f32::from_bits(x >> (23 - depth) << (23 - depth));
             position.y = f32::from_bits(y >> (23 - depth) << (23 - depth));
             position.z = f32::from_bits(z >> (23 - depth) << (23 - depth));
+
+            println!("POP {}", position);
         }
     }
 }
