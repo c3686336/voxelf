@@ -30,9 +30,9 @@ fn morton_at(
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct SvoNode {
-    child_mask: u8,
-    leaf: bool,
-    children: Vec<SvoNodeRef>,
+    pub child_mask: u8,
+    pub leaf: bool,
+    pub children: Vec<SvoNodeRef>,
 }
 
 impl fmt::Display for SvoNode {

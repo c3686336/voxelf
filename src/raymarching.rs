@@ -29,7 +29,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         .abs()
         .clamp(Vec3::ONE * 1.0 / dimension as f32, Vec3::MAX);
 
-    let dir_sign = direction.cmple(Vec3::ZERO);
+    let dir_sign = direction.cmpgt(Vec3::ZERO);
     let mask: usize =
         ((dir_sign.x as usize) << 2) | ((dir_sign.y as usize) << 1) | ((dir_sign.z as usize) << 0);
 
@@ -78,6 +78,8 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         position.z = 1.5;
     }
 
+    println!("{} {} {}", position, idx, mask);
+
     let mut parent_stack = Vec::<&SvoNode>::new();
     let mut idx_stack = Vec::<usize>::new();
 
@@ -87,6 +89,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
 
         // PUSH
         if (parent.child_mask >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
+            println!("PUSH {}", idx ^ mask);
             let child = svodag.deref(&parent.children[parent.index_of_morton(idx ^ mask)]);
 
             if child.leaf {
@@ -118,6 +121,8 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             continue;
         }
 
+        println!("a {}", position);
+
         // ADVANCE
         let mut step_mask = 0;
         if t2_current_cube.x <= tmax_current_cube {
@@ -129,12 +134,15 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             position.y -= scale;
         }
         if t2_current_cube.z <= tmax_current_cube {
-            step_mask ^= 2;
+            step_mask ^= 1;
             position.z -= scale;
         }
+
         let step_mask = step_mask;
         tmin = tmax_current_cube;
+
         idx ^= step_mask;
+        println!("b {} {} {}", position, idx ^ mask, step_mask);
 
         // POP
         if (idx & step_mask) != 0
@@ -150,6 +158,9 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             if (step_mask & 1) != 0 {
                 diff_bits |= position.z.to_bits() ^ (position.z + scale).to_bits();
             }
+
+            println!("c {}", position);
+
             if position.cmple(Vec3::ONE).any() {
                 return false;
             }
