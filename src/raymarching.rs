@@ -34,13 +34,13 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
 
     let mut origin = origin;
     if dir_sign.x {
-        origin.x = 1.5 - origin.x;
+        origin.x = 3.0 - origin.x;
     }
     if dir_sign.y {
-        origin.y = 1.5 - origin.y;
+        origin.y = 3.0 - origin.y;
     }
     if dir_sign.z {
-        origin.z = 1.5 - origin.z;
+        origin.z = 3.0 - origin.z;
     }
     let origin = origin;
 
@@ -74,18 +74,22 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         position.z = 1.5;
     }
 
+    println!("Starting At: {position} {idx}");
+
     let mut parent_stack = Vec::<&SvoNode>::new();
     let mut idx_stack = Vec::<usize>::new();
 
     loop {
         let t2_current_cube = (position - origin) * dir_inv;
         let tmax_current_cube = t2_current_cube.min_element();
+        println!("t2 {position} {origin} {dir_threshold} {t2_current_cube}");
 
         // PUSH
         if (parent.child_mask >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
             let child = svodag.deref(&parent.children[parent.index_of_morton(idx ^ mask)]);
 
             if child.leaf {
+                println!("Hit");
                 return true;
             }
 
@@ -151,7 +155,8 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
                 diff_bits |= position.z.to_bits() ^ (position.z + scale).to_bits();
             }
 
-            if position.cmple(Vec3::ONE).any() {
+            if position.cmplt(Vec3::ONE).any() {
+                println!("Miss");
                 return false;
             }
 
@@ -312,6 +317,13 @@ mod tests {
             }
 
             let direction = (target - origin).normalize();
+
+            println!("Origin: {}", origin);
+            println!("Target: {}", target);
+            println!("Target Voxel: {}", uvec3(px, py, pz));
+            println!("Depth: {}", depth);
+            println!("Direction: {}", direction);
+
 
             // The ray is pointing directly at a point inside the voxel from outside.
             // It should hit the voxel.
