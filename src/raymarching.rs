@@ -1,6 +1,6 @@
 use crate::{
-    Svodag,
     svodag::{SvoNode, SvoNodeRef, SvodagQueryResult},
+    Svodag,
 };
 use glam::*;
 
@@ -24,9 +24,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
     let max_depth = svodag.depth;
     let dimension = 1 << max_depth;
 
-    let dir_threshold = -direction
-        .abs()
-        .clamp(Vec3::ONE * 1.0 / dimension as f32, Vec3::MAX);
+    let dir_threshold = -direction.abs().clamp(Vec3::ONE * f32::EPSILON, Vec3::MAX);
 
     let dir_sign = direction.cmpgt(Vec3::ZERO);
     let mask: usize =
@@ -184,7 +182,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
 mod tests {
     use super::*;
     use crate::svodag::Svodag;
-    use glam::{Vec3, uvec3, vec3};
+    use glam::{uvec3, vec3, Vec3};
 
     #[test]
     fn test_single_voxel_hit() {
