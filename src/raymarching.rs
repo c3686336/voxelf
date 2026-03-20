@@ -43,6 +43,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         origin.z = 3.0 - origin.z;
     }
     let origin = origin;
+    println!("Origin: {origin}");
 
     let t1 = (Vec3::ONE - origin) * dir_inv;
     let t2 = (2.0 * Vec3::ONE - origin) * dir_inv;
@@ -50,13 +51,18 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
     let mut tmin = t2.max_element(); // Because of the mirroring
     let tmax = t1.min_element(); // Because of the mirroring
 
+    if tmax <= 0.0 || tmin > tmax {
+        return false;
+    }
+
+    println!("tmin tmax: {tmin} {tmax}");
+
     let mut position = Vec3::ONE;
     let mut parent = svodag.deref(root_ref);
 
     if parent.leaf && tmin <= tmax {
         return true;
     }
-
     let mut idx = 0;
     let mut scale = 0.5;
 
@@ -347,6 +353,11 @@ mod tests {
 
             let origin = vec3(ox, oy, oz);
             let direction = vec3(dx, dy, dz).normalize();
+
+            println!("Origin: {}", origin);
+            println!("Target Voxel: {}", uvec3(x % size, y % size, z % size));
+            println!("Depth: {}", depth);
+            println!("Direction: {}", direction);
 
             // The ray originates below/left/behind the cube and points away from it.
             // It should never hit.
