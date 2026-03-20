@@ -19,10 +19,9 @@ fn pos_to_morton(position: Vec3 /*position in 1~2*/, depth: usize) -> usize {
 }
 
 pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNodeRef) -> bool {
-    // The cube is at (1, 1, 1):w
+    // The cube is at (1, 1, 1)
 
     let max_depth = svodag.depth;
-    let dimension = 1 << max_depth;
 
     let dir_threshold = -direction.abs().clamp(Vec3::ONE * f32::EPSILON, Vec3::MAX);
 
@@ -43,7 +42,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         origin.z = 3.0 - origin.z;
     }
     let origin = origin;
-    println!("Origin: {origin}");
 
     let t1 = (Vec3::ONE - origin) * dir_inv;
     let t2 = (2.0 * Vec3::ONE - origin) * dir_inv;
@@ -54,8 +52,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
     if tmax <= 0.0 || tmin > tmax {
         return false;
     }
-
-    println!("tmin tmax: {tmin} {tmax}");
 
     let mut position = Vec3::ONE;
     let mut parent = svodag.deref(root_ref);
@@ -80,27 +76,21 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         position.z = 1.5;
     }
 
-    println!("Starting At: {position} {idx}");
-
     let mut parent_stack = Vec::<&SvoNode>::new();
-    let mut idx_stack = Vec::<usize>::new();
 
     loop {
         let t2_current_cube = (position - origin) * dir_inv;
         let tmax_current_cube = t2_current_cube.min_element();
-        println!("t2 {position} {origin} {dir_threshold} {t2_current_cube}");
 
         // PUSH
         if (parent.child_mask >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
             let child = svodag.deref(&parent.children[parent.index_of_morton(idx ^ mask)]);
 
             if child.leaf {
-                println!("Hit");
                 return true;
             }
 
             parent_stack.push(parent);
-            idx_stack.push(idx);
 
             parent = child;
             scale *= 0.5;
@@ -118,8 +108,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
                 idx ^= 1;
                 position.z += scale;
             }
-
-            println!("PUSH {}", position);
 
             continue;
         }
@@ -144,8 +132,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
 
         idx ^= step_mask;
 
-        println!("ADVANCE {}", position);
-
         // POP
         if (idx & step_mask) != 0
         /*If any of these cause idx to increase, not decrease*/
@@ -162,7 +148,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             }
 
             if position.cmplt(Vec3::ONE).any() {
-                println!("Miss");
                 return false;
             }
 
@@ -183,8 +168,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             position.x = f32::from_bits(x >> (23 - depth) << (23 - depth));
             position.y = f32::from_bits(y >> (23 - depth) << (23 - depth));
             position.z = f32::from_bits(z >> (23 - depth) << (23 - depth));
-
-            println!("POP {}", position);
         }
     }
 }
@@ -357,7 +340,6 @@ mod tests {
             println!("Origin: {}", origin);
             println!("Target Voxel: {}", uvec3(x % size, y % size, z % size));
             println!("Depth: {}", depth);
-            println!("Direction: {}", direction);
 
             // The ray originates below/left/behind the cube and points away from it.
             // It should never hit.
