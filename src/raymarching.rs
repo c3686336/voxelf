@@ -152,7 +152,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             }
 
             let depth = (diff_bits << 9).leading_zeros() + 1;
-            println!("{}", -scale.log2() as u32 >= depth);
             scale = (-(depth as f32)).exp2();
 
             let x = position.x.to_bits();
