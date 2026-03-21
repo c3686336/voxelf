@@ -8,6 +8,7 @@ crabtime = "*"
 anyhow = "*"
 glam = "*"
 image = "*"
+vulkano = "*"
 
 [dev-dependencies]
 proptest = "1.10.0"
