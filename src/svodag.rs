@@ -423,6 +423,10 @@ impl Svodag {
     pub fn get(&self, root: &SvoNodeRef, position: UVec3) -> SvodagQueryResult {
         self.get_recurse(root, position, 0)
     }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
 }
 
 impl fmt::Display for Svodag {
