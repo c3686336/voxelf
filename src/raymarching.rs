@@ -152,15 +152,16 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
             }
 
             let depth = (diff_bits << 9).leading_zeros() + 1;
+            println!("{}", -scale.log2() as u32 >= depth);
             scale = (-(depth as f32)).exp2();
 
             let x = position.x.to_bits();
             let y = position.y.to_bits();
             let z = position.z.to_bits();
 
-            idx = ((((x >> (22 - depth)) & 1) << 2)
-                | (((y >> (22 - depth)) & 1) << 1)
-                | (((z >> (22 - depth)) & 1) << 0)) as usize;
+            idx = ((((x >> (23 - depth)) & 1) << 2)
+                | (((y >> (23 - depth)) & 1) << 1)
+                | (((z >> (23 - depth)) & 1) << 0)) as usize;
             parent = parent_stack[(depth - 1) as usize];
             parent_stack.truncate((depth - 1) as usize);
             // TODO: Instead of popping an item which will be pushed back again anyway, just set a flag.
