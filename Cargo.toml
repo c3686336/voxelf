@@ -9,6 +9,7 @@ anyhow = "*"
 glam = "*"
 image = "*"
 vulkano = "*"
+vulkano-shaders = "*"
 
 [dev-dependencies]
 proptest = "1.10.0"
