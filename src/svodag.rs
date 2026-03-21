@@ -201,9 +201,13 @@ impl Svodag {
             self.nodes.swap(a_index, b_index);
             let mut node = self.nodes.pop().unwrap();
 
-            let b_ref = self.indices.iter().position(|&x| x == b_index).unwrap();
-            self.indices[node_ref.0] = usize::MAX;
-            self.indices[b_ref] = a_index;
+            if a_index != b_index {
+                let b_ref = self.indices.iter().position(|&x| x == b_index).unwrap();
+                self.indices[node_ref.0] = usize::MAX;
+                self.indices[b_ref] = a_index;
+            } else {
+                self.indices[node_ref.0] = usize::MAX;
+            }
 
             node.child_mask = 0;
             let children = std::mem::take(&mut node.children);
@@ -424,8 +428,9 @@ impl Svodag {
 impl fmt::Display for Svodag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "depth: {}", self.depth)?;
-        writeln!(f, "{:?}", self.indices)?;
-        writeln!(f, "{:?}", self.free_indices)?;
+        writeln!(f, "indices: {:?}", self.indices)?;
+        writeln!(f, "node count: {:?}", self.nodes.len())?;
+        writeln!(f, "free indices: {:?}", self.free_indices)?;
         writeln!(f, " nodes: ")?;
         for i in 0..self.indices.len() {
             if self.indices[i] != usize::MAX {
@@ -449,6 +454,29 @@ mod tests {
     use glam::uvec3;
     use proptest::prelude::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn test_regression_free_last_node() {
+        let depth = 2;
+        let width = 1 << depth;
+
+        let mut dag = Svodag::new(depth);
+
+        let mut root: Option<SvoNodeRef> = None;
+        for i in 0..width {
+            for j in 0..width {
+                for k in 0..width {
+                    if (i | j | k) == i + j + k {
+                        root = Some(dag.insert_mutate(root, uvec3(i, j, k), depth));
+                        assert!(dag
+                            .indices
+                            .iter()
+                            .all(|i| *i == usize::MAX || *i < dag.nodes.len()));
+                    }
+                }
+            }
+        }
+    }
 
     proptest! {
         #[test]
