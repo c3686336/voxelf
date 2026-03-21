@@ -6,6 +6,7 @@ use glam::{uvec3, vec2, vec3, Vec2, Vec3};
 use image::{Rgb, RgbImage};
 use raymarching::raymarch;
 use std::f32::consts::{PI, SQRT_2};
+use std::time::Instant;
 use svodag::{SvoNodeRef, Svodag};
 
 fn main() -> anyhow::Result<()> {
@@ -47,8 +48,8 @@ fn main() -> anyhow::Result<()> {
     let origin = vec3(1.05, 1.05, 1.05);
     let direction = vec3(1.0, 0.0, 0.0);
 
-    let img_width = 4096;
-    let img_height = 4096;
+    let img_width = 1920;
+    let img_height = 1080;
     let mut img = RgbImage::new(img_width, img_height);
 
     let camera_origin = vec3(1.5, 1.5, 3.);
@@ -59,6 +60,7 @@ fn main() -> anyhow::Result<()> {
     let film_height = 2.0;
     let film_distance = 1.0;
 
+    let now = Instant::now();
     for i in 0..img_width {
         for j in 0..img_height {
             let x = (i as f32) / (img_width as f32) * 1.0 - 0.5;
@@ -77,6 +79,13 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+
+    let elapsed = now.elapsed();
+    println!(
+        "Elapsed: {}, Time per ray: {}",
+        elapsed.as_secs_f32(),
+        elapsed.as_secs_f32() / ((img_width * img_height) as f32)
+    );
 
     img.save("asdf.png").unwrap();
 
