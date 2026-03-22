@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use glam::{vec2, vec3, Vec2, Vec3};
 use image::DynamicImage;
 use image::ImageBuffer;
 use image::Rgba;
@@ -54,7 +55,9 @@ use winit::{
 #[repr(C)]
 struct MyVertex {
     #[format(R32G32_SFLOAT)]
-    position: [f32; 2],
+    position: Vec2,
+    #[format(R32G32_SFLOAT)]
+    uv: Vec2,
 }
 
 mod vs {
@@ -154,13 +157,16 @@ impl App {
 
         let vertices = vec![
             MyVertex {
-                position: [-0.5, 0.5],
+                position: vec2(3.0, -1.0),
+                uv: vec2(2.0, 0.0),
             },
             MyVertex {
-                position: [0.0, 0.5],
+                position: vec2(-1.0, 3.0),
+                uv: vec2(0.0, 2.0),
             },
             MyVertex {
-                position: [0.5, -0.25],
+                position: vec2(-1.0, -1.0),
+                uv: vec2(0.0, 0.0),
             },
         ];
 
@@ -384,7 +390,7 @@ impl ApplicationHandler for App {
                     builder
                         .begin_render_pass(
                             RenderPassBeginInfo {
-                                clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                                clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
                                 ..RenderPassBeginInfo::framebuffer(
                                     rcx.framebuffers[image_index as usize].clone(),
                                 )

@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 crabtime = "*"
 anyhow = "*"
-glam = "*"
+glam = {version = "0.32", features = ["bytemuck"]}
 image = "*"
 vulkano = "0.35.2"
 vulkano-shaders = "0.35.0"
