@@ -1,8 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use glam::{vec2, vec3, Vec2, Vec3};
-use image::DynamicImage;
-use image::ImageBuffer;
-use image::Rgba;
 use std::sync::Arc;
 use vulkano::buffer::{
     AllocateBufferError, Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,

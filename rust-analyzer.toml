@@ -1,0 +1,9 @@
+[cargo]
+# Allows rust-analyzer to run build.rs scripts and properly expand macros
+# This is crucial for spirv-std's #[spirv] attributes to be recognized.
+buildScripts.enable = true
+
+[check]
+# Tells rust-analyzer NOT to check tests, benches, and examples.
+# This stops it from compiling the std-dependent test harness for your no_std shader crate!
+allTargets = false

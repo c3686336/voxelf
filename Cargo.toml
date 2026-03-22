@@ -1,17 +1,13 @@
-[package]
-name = "voxelf"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "3"
+members = [
+    "host",
+    "shader"
+]
 
-[dependencies]
-crabtime = "*"
-anyhow = "*"
-glam = {version = "0.32", features = ["bytemuck"]}
-image = "*"
-vulkano = "0.35.2"
-vulkano-shaders = "0.35.0"
-winit = "0.30.0"
+[profile.release.build-override]
+opt-level = 3
+codegen-units = 16
+[profile.dev.build-override]
+opt-level = 3
 
-[dev-dependencies]
-proptest = "1.10.0"
-rand = "0.10.0"
