@@ -194,6 +194,7 @@ impl App {
         let push_consts = shader::PushConsts {
             max_depth: 5,
             root_index: mapping[svodag.to_index(&root)],
+            padding: 0,
         };
 
         let svodag_buffer = Buffer::from_iter(
@@ -468,7 +469,8 @@ impl ApplicationHandler for App {
                             rcx.pipeline.layout().clone(),
                             0,
                             rcx.descriptor_set.clone(),
-                        )?;
+                        )?
+                        .push_constants(rcx.pipeline.layout().clone(), 0, self.push_consts);
 
                     unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
 

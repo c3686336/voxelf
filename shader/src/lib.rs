@@ -7,13 +7,14 @@ use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct PushConsts {
     pub max_depth: u32,
     pub root_index: SvoIndex,
+    pub padding: u16,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, bytemuck::AnyBitPattern)]
 #[repr(C)]
 pub struct SvoIndex(u16);
 

@@ -7,4 +7,5 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
+bytemuck = {version = "*", features = ["derive"]}
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "3089687" }
