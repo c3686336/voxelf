@@ -70,6 +70,7 @@ pub struct App {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     vertex_buffer: Subbuffer<[MyVertex]>,
     svodag_buffer: Subbuffer<[u16]>,
+    push_consts: shader::PushConsts,
     rcx: Option<RenderContext>,
 }
 
@@ -190,6 +191,11 @@ impl App {
         let (svodag, root) = svodag::get_example_svodag(5);
         let (serialized, mapping) = svodag.serialize();
 
+        let push_consts = shader::PushConsts {
+            max_depth: 5,
+            root_index: mapping[svodag.to_index(&root)],
+        };
+
         let svodag_buffer = Buffer::from_iter(
             memory_allocator.clone(),
             BufferCreateInfo {
@@ -201,7 +207,7 @@ impl App {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            serialized.get_data().iter().copied(),
+            serialized,
         )?;
 
         let rcx = None;
@@ -213,6 +219,7 @@ impl App {
             command_buffer_allocator,
             vertex_buffer,
             svodag_buffer,
+            push_consts,
             rcx,
         })
     }
@@ -461,7 +468,7 @@ impl ApplicationHandler for App {
                             rcx.pipeline.layout().clone(),
                             0,
                             rcx.descriptor_set.clone(),
-                        );
+                        )?;
 
                     unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
 

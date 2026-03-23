@@ -1,5 +1,5 @@
 use glam::{uvec3, UVec3};
-use shader::{SerializedSvodag, SvoIndex};
+use shader::{SerializedSvodagView, SvoIndex};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -429,12 +429,12 @@ impl Svodag {
         self.nodes.len()
     }
 
-    pub fn serialize(&self) -> (Box<SerializedSvodag>, Vec<SvoIndex>) {
-        let mut actual_indices: Vec<u16> = Vec::new();
+    pub fn serialize(&self) -> (Vec<u16>, Vec<SvoIndex>) {
+        let mut actual_indices: Vec<SvoIndex> = Vec::new();
         let mut result: Vec<u16> = Vec::new();
 
         for node in &self.nodes {
-            actual_indices.push(result.len() as u16);
+            actual_indices.push(unsafe { SvoIndex::from_raw(result.len() as u16) });
             result.push((node.child_mask as u16) << 8 | (node.leaf as u16));
 
             for child in &node.children {
@@ -446,22 +446,13 @@ impl Svodag {
         for (i, node) in self.nodes.iter().enumerate() {
             index += 1;
             for _ in &node.children {
-                result[index] = actual_indices[result[index as usize] as usize];
+                result[index] = actual_indices[result[index as usize] as usize].to_raw();
 
                 index += 1;
             }
         }
 
-        let boxed_slice: Box<[u16]> = result.into_boxed_slice();
-        let raw_slice_ptr: *mut [u16] = Box::into_raw(boxed_slice);
-        let raw_dst_ptr: *mut SerializedSvodag = raw_slice_ptr as *mut SerializedSvodag;
-        (
-            unsafe { Box::from_raw(raw_dst_ptr) },
-            actual_indices
-                .iter()
-                .map(|x| unsafe { SvoIndex::from_raw(*x) })
-                .collect(),
-        )
+        (result, actual_indices)
     }
 }
 

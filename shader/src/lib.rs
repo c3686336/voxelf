@@ -6,6 +6,13 @@ use spirv_std::glam::{vec2, vec3, vec4, Vec2, Vec3, Vec4};
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PushConsts {
+    pub max_depth: u32,
+    pub root_index: SvoIndex,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct SvoIndex(u16);
@@ -20,11 +27,13 @@ impl SvoIndex {
     }
 }
 
-pub struct SerializedSvodag {
-    data: [u16],
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct SerializedSvodagView<'a> {
+    data: &'a [u16],
 }
 
-impl SerializedSvodag {
+impl<'a> SerializedSvodagView<'a> {
     pub fn get_childmask(&self, index: SvoIndex) -> u8 {
         (self.data[index.to_raw() as usize] >> 8) as u8
     }
@@ -42,6 +51,10 @@ impl SerializedSvodag {
     pub fn get_data(&self) -> &[u16] {
         &self.data
     }
+
+    pub fn from_slice(slice: &'a [u16]) -> Self {
+        Self { data: slice }
+    }
 }
 
 fn pos_to_morton(position: Vec3, depth: u32) -> u8 {
@@ -52,7 +65,7 @@ fn pos_to_morton(position: Vec3, depth: u32) -> u8 {
     return ((x << 2) | (y << 1) | z) as u8;
 }
 
-fn index_of_morton(svodag: &SerializedSvodag, node: SvoIndex, morton: u8) -> u8 {
+fn index_of_morton(svodag: &SerializedSvodagView, node: SvoIndex, morton: u8) -> u8 {
     ((svodag.get_childmask(node) >> morton).count_ones().max(1) - 1) as u8
 }
 
@@ -60,7 +73,7 @@ pub fn raymarch(
     origin: Vec3,
     direction: Vec3,
     max_depth: u32,
-    svodag: &SerializedSvodag,
+    svodag: SerializedSvodagView,
     root_ref: SvoIndex,
 ) -> bool {
     let dir_threshold = -direction.abs().clamp(Vec3::ONE * f32::EPSILON, Vec3::MAX);
@@ -122,7 +135,7 @@ pub fn raymarch(
         // PUSH
         if (svodag.get_childmask(parent) >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
             // let child = svodag.deref(&parent.children[parent.index_of_morton(idx ^ mask)]);
-            let child = svodag.get_child(parent, index_of_morton(svodag, parent, idx ^ mask));
+            let child = svodag.get_child(parent, index_of_morton(&svodag, parent, idx ^ mask));
 
             if svodag.is_leaf(child) {
                 return true;
@@ -229,23 +242,35 @@ pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u16],
+    #[spirv(push_constant)] constants: &PushConsts,
 ) {
-    if buffer[0] == 0 {
+    let svodag = SerializedSvodagView::from_slice(buffer);
+
+    let camera_origin = vec3(1.5, 1.5, 3.0);
+    let camera_direction = vec3(0.0, 0.0, -1.0);
+    let camera_up = vec3(0.0, 1.0, 0.0);
+    let camera_right = camera_direction.cross(camera_up);
+
+    let film_width = 2.0;
+    let film_height = 2.0;
+    let film_distance = 1.0;
+
+    let x = uv - vec2(0.5, 0.5);
+    let film_point: Vec3 = camera_direction * film_distance
+        + x.x * camera_right * film_width
+        + x.y * camera_up * film_height;
+
+    let result = raymarch(
+        camera_origin,
+        film_point.normalize(),
+        constants.max_depth,
+        svodag,
+        constants.root_index,
+    );
+
+    if result {
+        *output = vec4(1.0, 0.0, 0.0, 1.0);
+    } else {
         *output = vec4(0.0, 1.0, 0.0, 1.0);
-        return;
     }
-
-    let c: Vec2 = uv * 4.0 - vec2(2.0, 2.0);
-    let mut z: Vec2 = Vec2::ZERO;
-
-    for i in 0..100 {
-        z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
-
-        if z.length_squared() >= 4.0 {
-            *output = vec4(1.0, 0.0, 0.0, 1.0);
-            return;
-        }
-    }
-
-    *output = vec4(0.0, 0.0, 0.0, 1.0);
 }

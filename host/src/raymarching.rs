@@ -176,7 +176,6 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_single_voxel_hit() {
         let depth = 3;
@@ -282,7 +281,7 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            &serialized,
+            shader::SerializedSvodagView::from_slice(&serialized),
             mapping[dag.to_index(&root)]
         ));
     }
@@ -303,7 +302,7 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            &serialized,
+            shader::SerializedSvodagView::from_slice(&serialized),
             mapping[dag.to_index(&root)]
         ));
     }
@@ -324,7 +323,7 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            &serialized,
+            shader::SerializedSvodagView::from_slice(&serialized),
             mapping[dag.to_index(&root)]
         ));
     }
@@ -344,7 +343,7 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            &serialized,
+            shader::SerializedSvodagView::from_slice(&serialized),
             mapping[dag.to_index(&root)]
         ));
     }
@@ -366,7 +365,7 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            &serialized,
+            shader::SerializedSvodagView::from_slice(&serialized),
             mapping[dag.to_index(&root)]
         ));
     }
@@ -387,7 +386,7 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            &serialized,
+            shader::SerializedSvodagView::from_slice(&serialized),
             mapping[dag.to_index(&root)]
         ));
     }
@@ -407,12 +406,13 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            &serialized,
+            shader::SerializedSvodagView::from_slice(&serialized),
             mapping[dag.to_index(&root)]
         ));
     }
     use crate::svodag::Svodag;
-    use glam::{uvec3, vec3, Vec3};    use proptest::prelude::*;
+    use glam::{uvec3, vec3, Vec3};
+    use proptest::prelude::*;
 
     proptest! {
         #[test]
@@ -536,7 +536,7 @@ mod tests {
                 origin,
                 direction,
                 dag.depth,
-                &serialized,
+                shader::SerializedSvodagView::from_slice(&serialized),
                 mapping[dag.to_index(&root)]
             ));
         }
@@ -565,7 +565,7 @@ mod tests {
                 origin,
                 direction,
                 dag.depth,
-                &serialized,
+                shader::SerializedSvodagView::from_slice(&serialized),
                 mapping[dag.to_index(&root)]
             ));
         }
