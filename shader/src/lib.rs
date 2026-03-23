@@ -6,6 +6,8 @@ use spirv_std::glam::{vec2, vec3, vec4, Vec2, Vec3, Vec4};
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
+const STACK_DEPTH: usize = 20;
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct PushConsts {
@@ -126,7 +128,7 @@ pub fn raymarch(
         position.z = 1.5;
     }
 
-    let mut stack: [SvoIndex; 10] = [parent; 10];
+    let mut stack: [SvoIndex; STACK_DEPTH] = [parent; STACK_DEPTH];
     let mut stack_ind = 0;
 
     loop {

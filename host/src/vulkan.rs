@@ -188,7 +188,7 @@ impl App {
         )
         .context("Cannot create VBO")?;
 
-        let (svodag, root) = svodag::get_example_svodag(5);
+        let (svodag, root) = svodag::get_example_svodag(7);
         let (serialized, mapping) = svodag.serialize();
 
         let push_consts = shader::PushConsts {

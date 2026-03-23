@@ -494,6 +494,8 @@ pub fn get_example_svodag(depth: u32) -> (Svodag, SvoNodeRef) {
         }
     }
 
+    println!("{}", dag.len());
+
     (dag, root.unwrap())
 }
 
