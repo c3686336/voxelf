@@ -1,4 +1,5 @@
 use glam::UVec3;
+use shader::{SerializedSvodag, SvoIndex};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -426,6 +427,35 @@ impl Svodag {
 
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn serialize(&self) -> Box<SerializedSvodag> {
+        let mut actual_indices: Vec<u16> = Vec::new();
+        let mut result: Vec<u16> = Vec::new();
+
+        for node in &self.nodes {
+            actual_indices.push(result.len() as u16);
+            result.push((node.child_mask as u16) << 8 | (node.leaf as u16));
+
+            for child in &node.children {
+                result.push(self.indices[child.0] as u16);
+            }
+        }
+
+        let mut index = 0;
+        for (i, node) in self.nodes.iter().enumerate() {
+            index += 1;
+            for child in &node.children {
+                result[index] = actual_indices[i];
+
+                index += 1;
+            }
+        }
+
+        let boxed_slice: Box<[u16]> = result.into_boxed_slice();
+        let raw_slice_ptr: *mut [u16] = Box::into_raw(boxed_slice);
+        let raw_dst_ptr: *mut SerializedSvodag = raw_slice_ptr as *mut SerializedSvodag;
+        unsafe { Box::from_raw(raw_dst_ptr) }
     }
 }
 

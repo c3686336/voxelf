@@ -9,6 +9,7 @@ glam = {version = "0.32", features = ["bytemuck"]}
 vulkano = "0.35.2"
 vulkano-shaders = "0.35.0"
 winit = "0.30.0"
+shader = { path = "../shader" }
 
 [dev-dependencies]
 proptest = "1.10.0"

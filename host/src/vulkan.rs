@@ -101,6 +101,10 @@ impl App {
 
         let device_features = DeviceFeatures {
             vulkan_memory_model: true,
+            shader_int16: true,
+            shader_int8: true,
+            storage_buffer8_bit_access: true,
+            storage_buffer16_bit_access: true,
             ..DeviceFeatures::empty()
         };
 

@@ -2640,6 +2640,7 @@ dependencies = [
  "glam",
  "proptest",
  "rand 0.10.0",
+ "shader",
  "spirv-builder",
  "vulkano",
  "vulkano-shaders",
