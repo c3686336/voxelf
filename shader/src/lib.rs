@@ -38,6 +38,10 @@ impl SerializedSvodag {
             SvoIndex::from_raw(self.data[index.to_raw() as usize + (1 + child_index) as usize])
         }
     }
+
+    pub fn get_data(&self) -> &[u16] {
+        &self.data
+    }
 }
 
 fn pos_to_morton(position: Vec3, depth: u32) -> u8 {
@@ -221,7 +225,16 @@ pub fn main_vs(
 }
 
 #[spirv(fragment)]
-pub fn main_fs(output: &mut Vec4, #[spirv(location = 0)] uv: Vec2) {
+pub fn main_fs(
+    output: &mut Vec4,
+    #[spirv(location = 0)] uv: Vec2,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u16],
+) {
+    if buffer[0] == 0 {
+        *output = vec4(0.0, 1.0, 0.0, 1.0);
+        return;
+    }
+
     let c: Vec2 = uv * 4.0 - vec2(2.0, 2.0);
     let mut z: Vec2 = Vec2::ZERO;
 
@@ -229,7 +242,7 @@ pub fn main_fs(output: &mut Vec4, #[spirv(location = 0)] uv: Vec2) {
         z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
 
         if z.length_squared() >= 4.0 {
-            *output = vec4(1.0, 0.0, 0.0, 0.0);
+            *output = vec4(1.0, 0.0, 0.0, 1.0);
             return;
         }
     }

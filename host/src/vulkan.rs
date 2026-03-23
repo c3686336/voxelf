@@ -1,3 +1,4 @@
+use crate::svodag;
 use anyhow::{anyhow, Context, Result};
 use glam::{vec2, vec3, Vec2, Vec3};
 use std::sync::Arc;
@@ -11,9 +12,11 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
     SubpassBeginInfo, SubpassContents, SubpassEndInfo,
 };
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::device::{
-    physical, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
-    QueueFlags,
+    self, physical, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue,
+    QueueCreateInfo, QueueFlags,
 };
 use vulkano::format::Format;
 use vulkano::image::view::ImageView;
@@ -29,7 +32,7 @@ use vulkano::pipeline::graphics::viewport;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::DynamicState;
+use vulkano::pipeline::{self, DynamicState, Pipeline};
 use vulkano::pipeline::{
     GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateFlags, PipelineShaderStageCreateInfo,
 };
@@ -40,7 +43,7 @@ use vulkano::swapchain::acquire_next_image;
 use vulkano::swapchain::SwapchainCreateInfo;
 use vulkano::swapchain::SwapchainPresentInfo;
 use vulkano::swapchain::{Surface, Swapchain};
-use vulkano::sync::{self, GpuFuture};
+use vulkano::sync::{self, semaphore, GpuFuture};
 use vulkano::Validated;
 use vulkano::VulkanError;
 use vulkano::{library, render_pass, VulkanLibrary};
@@ -66,6 +69,7 @@ pub struct App {
     queue: Arc<Queue>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     vertex_buffer: Subbuffer<[MyVertex]>,
+    svodag_buffer: Subbuffer<[u16]>,
     rcx: Option<RenderContext>,
 }
 
@@ -78,6 +82,7 @@ struct RenderContext {
     viewport: Viewport,
     recreate_swapchain: bool,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
+    descriptor_set: Arc<DescriptorSet>,
 }
 
 impl App {
@@ -182,6 +187,23 @@ impl App {
         )
         .context("Cannot create VBO")?;
 
+        let (svodag, root) = svodag::get_example_svodag(5);
+        let (serialized, mapping) = svodag.serialize();
+
+        let svodag_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            serialized.get_data().iter().copied(),
+        )?;
+
         let rcx = None;
 
         Ok(App {
@@ -190,6 +212,7 @@ impl App {
             queue,
             command_buffer_allocator,
             vertex_buffer,
+            svodag_buffer,
             rcx,
         })
     }
@@ -307,6 +330,25 @@ impl ApplicationHandler for App {
                 )
             }?;
 
+            let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+                self.device.clone(),
+                Default::default(),
+            ));
+            let pipeline_layout = pipeline.layout();
+            let descriptor_set_layouts = pipeline_layout.set_layouts();
+
+            let descriptor_set_layout_index = 0;
+            let descriptor_set_layout = descriptor_set_layouts
+                .get(descriptor_set_layout_index)
+                .context("")?;
+
+            let descriptor_set = DescriptorSet::new(
+                descriptor_set_allocator.clone(),
+                descriptor_set_layout.clone(),
+                [WriteDescriptorSet::buffer(0, self.svodag_buffer.clone())],
+                [],
+            )?;
+
             let viewport = Viewport {
                 offset: [0.0, 0.0],
                 extent: window_size.into(),
@@ -326,6 +368,7 @@ impl ApplicationHandler for App {
                 viewport,
                 recreate_swapchain,
                 previous_frame_end,
+                descriptor_set,
             });
 
             Ok::<(), anyhow::Error>(())
@@ -412,7 +455,13 @@ impl ApplicationHandler for App {
                         )?
                         .set_viewport(0, [rcx.viewport.clone()].into_iter().collect())?
                         .bind_pipeline_graphics(rcx.pipeline.clone())?
-                        .bind_vertex_buffers(0, self.vertex_buffer.clone())?;
+                        .bind_vertex_buffers(0, self.vertex_buffer.clone())?
+                        .bind_descriptor_sets(
+                            vulkano::pipeline::PipelineBindPoint::Graphics,
+                            rcx.pipeline.layout().clone(),
+                            0,
+                            rcx.descriptor_set.clone(),
+                        );
 
                     unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
 

@@ -1,4 +1,4 @@
-use glam::UVec3;
+use glam::{uvec3, UVec3};
 use shader::{SerializedSvodag, SvoIndex};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -486,6 +486,24 @@ impl fmt::Display for Svodag {
 
         Ok(())
     }
+}
+
+pub fn get_example_svodag(depth: u32) -> (Svodag, SvoNodeRef) {
+    let width = 1 << depth;
+    let mut dag = Svodag::new(depth);
+
+    let mut root: Option<SvoNodeRef> = None;
+    for i in 0..width {
+        for j in 0..width {
+            for k in 0..width {
+                if (i | j | k) == i + j + k {
+                    root = Some(dag.insert_mutate(root, uvec3(i, j, k), depth));
+                }
+            }
+        }
+    }
+
+    (dag, root.unwrap())
 }
 
 #[cfg(test)]
