@@ -139,7 +139,7 @@ impl Svodag {
         }
     }
 
-    fn to_index(&self, node_ref: &SvoNodeRef) -> usize {
+    pub fn to_index(&self, node_ref: &SvoNodeRef) -> usize {
         self.indices[node_ref.0]
     }
 
@@ -429,7 +429,7 @@ impl Svodag {
         self.nodes.len()
     }
 
-    pub fn serialize(&self) -> Box<SerializedSvodag> {
+    pub fn serialize(&self) -> (Box<SerializedSvodag>, Vec<SvoIndex>) {
         let mut actual_indices: Vec<u16> = Vec::new();
         let mut result: Vec<u16> = Vec::new();
 
@@ -445,8 +445,8 @@ impl Svodag {
         let mut index = 0;
         for (i, node) in self.nodes.iter().enumerate() {
             index += 1;
-            for child in &node.children {
-                result[index] = actual_indices[i];
+            for _ in &node.children {
+                result[index] = actual_indices[result[index as usize] as usize];
 
                 index += 1;
             }
@@ -455,7 +455,13 @@ impl Svodag {
         let boxed_slice: Box<[u16]> = result.into_boxed_slice();
         let raw_slice_ptr: *mut [u16] = Box::into_raw(boxed_slice);
         let raw_dst_ptr: *mut SerializedSvodag = raw_slice_ptr as *mut SerializedSvodag;
-        unsafe { Box::from_raw(raw_dst_ptr) }
+        (
+            unsafe { Box::from_raw(raw_dst_ptr) },
+            actual_indices
+                .iter()
+                .map(|x| unsafe { SvoIndex::from_raw(*x) })
+                .collect(),
+        )
     }
 }
 

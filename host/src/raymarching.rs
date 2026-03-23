@@ -192,6 +192,27 @@ mod tests {
     }
 
     #[test]
+    fn test_single_voxel_hit_serialized() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
+
+        let (serialized, mapping) = dag.serialize();
+
+        // voxel at (0,0,0) is in [1.0, 1.125]x[1.0, 1.125]x[1.0, 1.125]
+        let origin = vec3(0.5, 1.05, 1.05);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(shader::raymarch(
+            origin,
+            direction,
+            dag.depth,
+            &serialized,
+            mapping[dag.to_index(&root)]
+        ));
+    }
+
+    #[test]
     fn test_single_voxel_miss() {
         let depth = 3;
         let mut dag = Svodag::new(depth);
