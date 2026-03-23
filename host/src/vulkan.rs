@@ -11,12 +11,14 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
     SubpassBeginInfo, SubpassContents, SubpassEndInfo,
 };
-use vulkano::device::DeviceExtensions;
-use vulkano::device::{physical, Device, DeviceCreateInfo, Queue, QueueCreateInfo, QueueFlags};
+use vulkano::device::{
+    physical, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
+    QueueFlags,
+};
 use vulkano::format::Format;
 use vulkano::image::view::ImageView;
 use vulkano::image::{Image, ImageCreateInfo, ImageType, ImageUsage};
-use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
+use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
@@ -33,6 +35,7 @@ use vulkano::pipeline::{
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo};
 use vulkano::render_pass::{RenderPass, Subpass};
+use vulkano::shader::{ShaderModule, ShaderModuleCreateInfo};
 use vulkano::swapchain::acquire_next_image;
 use vulkano::swapchain::SwapchainCreateInfo;
 use vulkano::swapchain::SwapchainPresentInfo;
@@ -55,20 +58,6 @@ struct MyVertex {
     position: Vec2,
     #[format(R32G32_SFLOAT)]
     uv: Vec2,
-}
-
-mod vs {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        path: "src/simple.vert"
-    }
-}
-
-mod fs {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        path: "src/simple.frag"
-    }
 }
 
 pub struct App {
@@ -106,7 +95,13 @@ impl App {
 
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
+            khr_vulkan_memory_model: true,
             ..DeviceExtensions::empty()
+        };
+
+        let device_features = DeviceFeatures {
+            vulkan_memory_model: true,
+            ..DeviceFeatures::empty()
         };
 
         let physical_device = instance
@@ -134,6 +129,7 @@ impl App {
             physical_device,
             DeviceCreateInfo {
                 enabled_extensions: device_extensions,
+                enabled_features: device_features,
                 queue_create_infos: vec![QueueCreateInfo {
                     queue_family_index,
                     ..Default::default()
@@ -249,13 +245,26 @@ impl ApplicationHandler for App {
 
             let framebuffers = window_size_dependent_setup(&images, &render_pass)?;
 
+            const SHADER: &[u8] = include_bytes!(env!("shader.spv"));
+            let shader_code = SHADER
+                .chunks(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect::<Vec<_>>();
+
+            let shader_module = unsafe {
+                ShaderModule::new(
+                    self.device.clone(),
+                    ShaderModuleCreateInfo::new(&shader_code),
+                )
+            }?;
+
             let pipeline = {
-                let vs = vs::load(self.device.clone())?
-                    .entry_point("main")
-                    .context("Could not find `main`")?;
-                let fs = fs::load(self.device.clone())?
-                    .entry_point("main")
-                    .context("Could not find `main`")?;
+                let vs = shader_module
+                    .entry_point("main_vs")
+                    .context("Could not find `main_vs`")?;
+                let fs = shader_module
+                    .entry_point("main_fs")
+                    .context("Could not find `main_fs`")?;
 
                 let vertex_input_state = MyVertex::per_vertex().definition(&vs)?;
 

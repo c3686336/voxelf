@@ -1,9 +1,11 @@
-use spirv_builder::SpirvBuilder;
+use spirv_builder::{SpirvBuilder, SpirvMetadata};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Point the builder to the path of your shader crate
-    SpirvBuilder::new("../shader", "spirv-unknown-vulkan1.1")
-        .build()?;
-        
+    let mut builder = SpirvBuilder::new("../shader", "spirv-unknown-vulkan1.2");
+    builder.build_script.defaults = true;
+    builder.spirv_metadata = SpirvMetadata::Full;
+    builder.build_script.env_shader_spv_path = Some(true);
+    builder.build()?;
+
     Ok(())
 }
