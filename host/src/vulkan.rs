@@ -191,11 +191,7 @@ impl App {
         let (svodag, root) = svodag::get_example_svodag(7);
         let (serialized, mapping) = svodag.serialize();
 
-        let push_consts = shader::PushConsts {
-            max_depth: 5,
-            root_index: mapping[svodag.to_index(&root)],
-            padding: 0,
-        };
+        let push_consts = shader::PushConsts::new(5, mapping[svodag.to_index(&root)]);
 
         let svodag_buffer = Buffer::from_iter(
             memory_allocator.clone(),

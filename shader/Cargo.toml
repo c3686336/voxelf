@@ -1,11 +1,13 @@
 [package]
 name = "shader"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["rlib"]
 
 [dependencies]
 bytemuck = {version = "*", features = ["derive"]}
+glam = { version = "0.32.1", features = ["bytemuck"] }
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "3089687" }
+

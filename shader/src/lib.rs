@@ -2,7 +2,7 @@
 
 extern crate spirv_std;
 
-use spirv_std::glam::{vec2, vec3, vec4, Vec2, Vec3, Vec4};
+use spirv_std::glam::{vec2, vec3, vec4, Mat4, Vec2, Vec3, Vec4};
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
@@ -13,7 +13,24 @@ const STACK_DEPTH: usize = 20;
 pub struct PushConsts {
     pub max_depth: u32,
     pub root_index: SvoIndex,
-    pub padding: u16,
+    pad: u16,
+}
+
+impl PushConsts {
+    pub fn new(max_depth: u32, root_index: SvoIndex) -> Self {
+        Self {
+            max_depth,
+            root_index,
+            pad: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
+pub struct SvodagMetaData {
+    pub root_index: SvoIndex,
+    pub inv_model_transform: Mat4,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, bytemuck::AnyBitPattern)]
