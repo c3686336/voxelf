@@ -30,7 +30,18 @@ impl PushConsts {
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct SvodagMetaData {
     pub root_index: SvoIndex,
+    pad: u16,
     pub inv_model_transform: Mat4,
+}
+
+impl SvodagMetaData {
+    pub fn new(root_index: SvoIndex, inv_model_transform: Mat4) -> Self {
+        Self {
+            root_index,
+            pad: 0,
+            inv_model_transform,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, bytemuck::AnyBitPattern)]
@@ -262,6 +273,7 @@ pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u16],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] metadata: &[SvodagMetaData],
     #[spirv(push_constant)] constants: &PushConsts,
 ) {
     let svodag = SerializedSvodagView::from_slice(buffer);
@@ -285,7 +297,7 @@ pub fn main_fs(
         film_point.normalize(),
         constants.max_depth,
         svodag,
-        constants.root_index,
+        metadata[0].root_index,
     );
 
     if result {

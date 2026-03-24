@@ -1,6 +1,7 @@
 use crate::svodag;
 use anyhow::{anyhow, Context, Result};
-use glam::{vec2, vec3, Vec2, Vec3};
+use glam::{vec2, vec3, Mat4, Vec2, Vec3};
+use shader::SvodagMetaData;
 use std::sync::Arc;
 use vulkano::buffer::{
     AllocateBufferError, Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
@@ -70,6 +71,7 @@ pub struct App {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     vertex_buffer: Subbuffer<[MyVertex]>,
     svodag_buffer: Subbuffer<[u16]>,
+    svodag_metadata_buffer: Subbuffer<[shader::SvodagMetaData]>,
     push_consts: shader::PushConsts,
     rcx: Option<RenderContext>,
 }
@@ -207,6 +209,23 @@ impl App {
             serialized,
         )?;
 
+        let svodag_metadata_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            vec![SvodagMetaData::new(
+                mapping[svodag.to_index(&root)],
+                Mat4::IDENTITY,
+            )],
+        )?;
+
         let rcx = None;
 
         Ok(App {
@@ -216,6 +235,7 @@ impl App {
             command_buffer_allocator,
             vertex_buffer,
             svodag_buffer,
+            svodag_metadata_buffer,
             push_consts,
             rcx,
         })
@@ -349,7 +369,10 @@ impl ApplicationHandler for App {
             let descriptor_set = DescriptorSet::new(
                 descriptor_set_allocator.clone(),
                 descriptor_set_layout.clone(),
-                [WriteDescriptorSet::buffer(0, self.svodag_buffer.clone())],
+                [
+                    WriteDescriptorSet::buffer(0, self.svodag_buffer.clone()),
+                    WriteDescriptorSet::buffer(1, self.svodag_metadata_buffer.clone()),
+                ],
                 [],
             )?;
 
