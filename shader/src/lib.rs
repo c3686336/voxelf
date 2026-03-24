@@ -88,14 +88,6 @@ impl<'a> SerializedSvodagView<'a> {
     }
 }
 
-fn pos_to_morton(position: Vec3, depth: u32) -> u8 {
-    let x = (position.x.to_bits() >> (23 - depth)) & 0b1;
-    let y = (position.y.to_bits() >> (23 - depth)) & 0b1;
-    let z = (position.z.to_bits() >> (23 - depth)) & 0b1;
-
-    return ((x << 2) | (y << 1) | z) as u8;
-}
-
 fn index_of_morton(svodag: &SerializedSvodagView, node: SvoIndex, morton: u8) -> u8 {
     ((svodag.get_childmask(node) >> morton).count_ones().max(1) - 1) as u8
 }

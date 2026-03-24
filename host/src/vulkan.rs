@@ -64,7 +64,7 @@ struct MyVertex {
     uv: Vec2,
 }
 
-pub struct App {
+pub struct Vulkan {
     instance: Arc<Instance>,
     device: Arc<Device>,
     queue: Arc<Queue>,
@@ -88,7 +88,7 @@ struct RenderContext {
     descriptor_set: Arc<DescriptorSet>,
 }
 
-impl App {
+impl Vulkan {
     pub fn new(event_loop: &EventLoop<()>) -> anyhow::Result<Self> {
         let library = VulkanLibrary::new()?;
         let required_extensions = Surface::required_extensions(&event_loop)?;
@@ -228,7 +228,7 @@ impl App {
 
         let rcx = None;
 
-        Ok(App {
+        Ok(Vulkan {
             instance,
             device,
             queue,
@@ -240,300 +240,273 @@ impl App {
             rcx,
         })
     }
-}
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        (|| {
-            let window = Arc::new(event_loop.create_window(Window::default_attributes())?);
-            let surface = Surface::from_window(self.instance.clone(), window.clone())?;
-            let window_size = window.inner_size();
-
-            let (swapchain, images) = {
-                let surface_capabilities = self
-                    .device
-                    .physical_device()
-                    .surface_capabilities(&surface, Default::default())?;
-
-                let (image_format, _) = self
-                    .device
-                    .physical_device()
-                    .surface_formats(&surface, Default::default())?[0];
-
-                Swapchain::new(
-                    self.device.clone(),
-                    surface,
-                    SwapchainCreateInfo {
-                        min_image_count: surface_capabilities.min_image_count.max(2),
-                        image_format,
-                        image_extent: window_size.into(),
-                        image_usage: ImageUsage::COLOR_ATTACHMENT,
-                        composite_alpha: surface_capabilities
-                            .supported_composite_alpha
-                            .into_iter()
-                            .next()
-                            .context("No supported composite alpha")?,
-                        ..Default::default()
-                    },
-                )?
-            };
-
-            let render_pass = vulkano::single_pass_renderpass!(
-                self.device.clone(),
-                attachments: {
-                    color: {
-                        format: swapchain.image_format(),
-                        samples: 1,
-                        load_op: Clear,
-                        store_op: Store,
-                    },
-                },
-                pass: {
-                    color: [color],
-                    depth_stencil: {},
-                },
-            )?;
-
-            let framebuffers = window_size_dependent_setup(&images, &render_pass)?;
-
-            const SHADER: &[u8] = include_bytes!(env!("shader.spv"));
-            let shader_code = SHADER
-                .chunks(4)
-                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect::<Vec<_>>();
-
-            let shader_module = unsafe {
-                ShaderModule::new(
-                    self.device.clone(),
-                    ShaderModuleCreateInfo::new(&shader_code),
-                )
-            }?;
-
-            let pipeline = {
-                let vs = shader_module
-                    .entry_point("main_vs")
-                    .context("Could not find `main_vs`")?;
-                let fs = shader_module
-                    .entry_point("main_fs")
-                    .context("Could not find `main_fs`")?;
-
-                let vertex_input_state = MyVertex::per_vertex().definition(&vs)?;
-
-                let stages = [
-                    PipelineShaderStageCreateInfo::new(vs),
-                    PipelineShaderStageCreateInfo::new(fs),
-                ];
-
-                let layout = PipelineLayout::new(
-                    self.device.clone(),
-                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-                        .into_pipeline_layout_create_info(self.device.clone())?,
-                )?;
-
-                let subpass =
-                    Subpass::from(render_pass.clone(), 0).context("Could not create subpass")?;
-
-                GraphicsPipeline::new(
-                    self.device.clone(),
-                    None,
-                    GraphicsPipelineCreateInfo {
-                        stages: stages.into_iter().collect(),
-                        vertex_input_state: Some(vertex_input_state),
-                        input_assembly_state: Some(InputAssemblyState::default()),
-                        viewport_state: Some(ViewportState::default()),
-                        rasterization_state: Some(RasterizationState::default()),
-                        multisample_state: Some(MultisampleState::default()),
-                        color_blend_state: Some(ColorBlendState::with_attachment_states(
-                            subpass.num_color_attachments(),
-                            ColorBlendAttachmentState::default(),
-                        )),
-                        dynamic_state: [DynamicState::Viewport].into_iter().collect(),
-                        subpass: Some(subpass.into()),
-                        ..GraphicsPipelineCreateInfo::layout(layout)
-                    },
-                )
-            }?;
-
-            let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
-                self.device.clone(),
-                Default::default(),
-            ));
-            let pipeline_layout = pipeline.layout();
-            let descriptor_set_layouts = pipeline_layout.set_layouts();
-
-            let descriptor_set_layout_index = 0;
-            let descriptor_set_layout = descriptor_set_layouts
-                .get(descriptor_set_layout_index)
-                .context("")?;
-
-            let descriptor_set = DescriptorSet::new(
-                descriptor_set_allocator.clone(),
-                descriptor_set_layout.clone(),
-                [
-                    WriteDescriptorSet::buffer(0, self.svodag_buffer.clone()),
-                    WriteDescriptorSet::buffer(1, self.svodag_metadata_buffer.clone()),
-                ],
-                [],
-            )?;
-
-            let viewport = Viewport {
-                offset: [0.0, 0.0],
-                extent: window_size.into(),
-                depth_range: 0.0..=1.0,
-            };
-
-            let recreate_swapchain = false;
-
-            let previous_frame_end = Some(sync::now(self.device.clone()).boxed());
-
-            self.rcx = Some(RenderContext {
-                window,
-                swapchain,
-                render_pass,
-                framebuffers,
-                pipeline,
-                viewport,
-                recreate_swapchain,
-                previous_frame_end,
-                descriptor_set,
-            });
-
-            Ok::<(), anyhow::Error>(())
-        })()
-        .unwrap();
-    }
-
-    fn window_event(
+    pub fn resumed(
         &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        (|| -> anyhow::Result<()> {
-            let rcx = self.rcx.as_mut().context("What?")?;
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) -> anyhow::Result<()> {
+        let window = Arc::new(event_loop.create_window(Window::default_attributes())?);
+        let surface = Surface::from_window(self.instance.clone(), window.clone())?;
+        let window_size = window.inner_size();
 
-            match event {
-                WindowEvent::CloseRequested => {
-                    event_loop.exit();
-                }
-                WindowEvent::Resized(_) => {
-                    rcx.recreate_swapchain = true;
-                }
-                WindowEvent::RedrawRequested => {
-                    let window_size = rcx.window.inner_size();
+        let (swapchain, images) = {
+            let surface_capabilities = self
+                .device
+                .physical_device()
+                .surface_capabilities(&surface, Default::default())?;
 
-                    if window_size.width == 0 || window_size.height == 0 {
-                        return Ok(());
-                    }
+            let (image_format, _) = self
+                .device
+                .physical_device()
+                .surface_formats(&surface, Default::default())?[0];
 
-                    rcx.previous_frame_end
-                        .as_mut()
-                        .context("What?")?
-                        .cleanup_finished();
+            Swapchain::new(
+                self.device.clone(),
+                surface,
+                SwapchainCreateInfo {
+                    min_image_count: surface_capabilities.min_image_count.max(2),
+                    image_format,
+                    image_extent: window_size.into(),
+                    image_usage: ImageUsage::COLOR_ATTACHMENT,
+                    composite_alpha: surface_capabilities
+                        .supported_composite_alpha
+                        .into_iter()
+                        .next()
+                        .context("No supported composite alpha")?,
+                    ..Default::default()
+                },
+            )?
+        };
 
-                    if rcx.recreate_swapchain {
-                        let (new_swapchain, new_images) =
-                            rcx.swapchain.recreate(SwapchainCreateInfo {
-                                image_extent: window_size.into(),
-                                ..rcx.swapchain.create_info()
-                            })?;
+        let render_pass = vulkano::single_pass_renderpass!(
+            self.device.clone(),
+            attachments: {
+                color: {
+                    format: swapchain.image_format(),
+                    samples: 1,
+                    load_op: Clear,
+                    store_op: Store,
+                },
+            },
+            pass: {
+                color: [color],
+                depth_stencil: {},
+            },
+        )?;
 
-                        rcx.swapchain = new_swapchain;
-                        rcx.framebuffers =
-                            window_size_dependent_setup(&new_images, &rcx.render_pass)?;
-                        rcx.viewport.extent = window_size.into();
-                        rcx.recreate_swapchain = false;
-                    }
+        let framebuffers = window_size_dependent_setup(&images, &render_pass)?;
 
-                    let (image_index, suboptimal, acquire_future) =
-                        match acquire_next_image(rcx.swapchain.clone(), None)
-                            .map_err(Validated::unwrap)
-                        {
-                            Ok(r) => r,
-                            Err(VulkanError::OutOfDate) => {
-                                rcx.recreate_swapchain = true;
-                                return Ok(());
-                            }
-                            Err(e) => return Err(anyhow!(e)),
-                        };
+        const SHADER: &[u8] = include_bytes!(env!("shader.spv"));
+        let shader_code = SHADER
+            .chunks(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect::<Vec<_>>();
 
-                    if suboptimal {
-                        rcx.recreate_swapchain = true;
-                    }
+        let shader_module = unsafe {
+            ShaderModule::new(
+                self.device.clone(),
+                ShaderModuleCreateInfo::new(&shader_code),
+            )
+        }?;
 
-                    let mut builder = AutoCommandBufferBuilder::primary(
-                        self.command_buffer_allocator.clone(),
-                        self.queue.queue_family_index(),
-                        CommandBufferUsage::OneTimeSubmit,
-                    )?;
+        let pipeline = {
+            let vs = shader_module
+                .entry_point("main_vs")
+                .context("Could not find `main_vs`")?;
+            let fs = shader_module
+                .entry_point("main_fs")
+                .context("Could not find `main_fs`")?;
 
-                    builder
-                        .begin_render_pass(
-                            RenderPassBeginInfo {
-                                clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                                ..RenderPassBeginInfo::framebuffer(
-                                    rcx.framebuffers[image_index as usize].clone(),
-                                )
-                            },
-                            SubpassBeginInfo {
-                                contents: SubpassContents::Inline,
-                                ..Default::default()
-                            },
-                        )?
-                        .set_viewport(0, [rcx.viewport.clone()].into_iter().collect())?
-                        .bind_pipeline_graphics(rcx.pipeline.clone())?
-                        .bind_vertex_buffers(0, self.vertex_buffer.clone())?
-                        .bind_descriptor_sets(
-                            vulkano::pipeline::PipelineBindPoint::Graphics,
-                            rcx.pipeline.layout().clone(),
-                            0,
-                            rcx.descriptor_set.clone(),
-                        )?
-                        .push_constants(rcx.pipeline.layout().clone(), 0, self.push_consts);
+            let vertex_input_state = MyVertex::per_vertex().definition(&vs)?;
 
-                    unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
+            let stages = [
+                PipelineShaderStageCreateInfo::new(vs),
+                PipelineShaderStageCreateInfo::new(fs),
+            ];
 
-                    builder.end_render_pass(Default::default())?;
+            let layout = PipelineLayout::new(
+                self.device.clone(),
+                PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                    .into_pipeline_layout_create_info(self.device.clone())?,
+            )?;
 
-                    let command_buffer = builder.build()?;
+            let subpass =
+                Subpass::from(render_pass.clone(), 0).context("Could not create subpass")?;
 
-                    let future = rcx
-                        .previous_frame_end
-                        .take()
-                        .context("")?
-                        .join(acquire_future)
-                        .then_execute(self.queue.clone(), command_buffer)?
-                        .then_swapchain_present(
-                            self.queue.clone(),
-                            SwapchainPresentInfo::swapchain_image_index(
-                                rcx.swapchain.clone(),
-                                image_index,
-                            ),
-                        )
-                        .then_signal_fence_and_flush();
+            GraphicsPipeline::new(
+                self.device.clone(),
+                None,
+                GraphicsPipelineCreateInfo {
+                    stages: stages.into_iter().collect(),
+                    vertex_input_state: Some(vertex_input_state),
+                    input_assembly_state: Some(InputAssemblyState::default()),
+                    viewport_state: Some(ViewportState::default()),
+                    rasterization_state: Some(RasterizationState::default()),
+                    multisample_state: Some(MultisampleState::default()),
+                    color_blend_state: Some(ColorBlendState::with_attachment_states(
+                        subpass.num_color_attachments(),
+                        ColorBlendAttachmentState::default(),
+                    )),
+                    dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+                    subpass: Some(subpass.into()),
+                    ..GraphicsPipelineCreateInfo::layout(layout)
+                },
+            )
+        }?;
 
-                    match future.map_err(Validated::unwrap) {
-                        Ok(future) => {
-                            rcx.previous_frame_end = Some(future.boxed());
-                        }
-                        Err(VulkanError::OutOfDate) => {
-                            rcx.recreate_swapchain = true;
-                            rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed())
-                        }
-                        Err(e) => return Err(anyhow!(e)),
-                    }
-                }
-                _ => {}
-            }
+        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            self.device.clone(),
+            Default::default(),
+        ));
+        let pipeline_layout = pipeline.layout();
+        let descriptor_set_layouts = pipeline_layout.set_layouts();
 
-            Ok(())
-        })()
-        .unwrap();
+        let descriptor_set_layout_index = 0;
+        let descriptor_set_layout = descriptor_set_layouts
+            .get(descriptor_set_layout_index)
+            .context("")?;
+
+        let descriptor_set = DescriptorSet::new(
+            descriptor_set_allocator.clone(),
+            descriptor_set_layout.clone(),
+            [
+                WriteDescriptorSet::buffer(0, self.svodag_buffer.clone()),
+                WriteDescriptorSet::buffer(1, self.svodag_metadata_buffer.clone()),
+            ],
+            [],
+        )?;
+
+        let viewport = Viewport {
+            offset: [0.0, 0.0],
+            extent: window_size.into(),
+            depth_range: 0.0..=1.0,
+        };
+
+        let recreate_swapchain = false;
+
+        let previous_frame_end = Some(sync::now(self.device.clone()).boxed());
+
+        self.rcx = Some(RenderContext {
+            window,
+            swapchain,
+            render_pass,
+            framebuffers,
+            pipeline,
+            viewport,
+            recreate_swapchain,
+            previous_frame_end,
+            descriptor_set,
+        });
+
+        Ok(())
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let rcx = self.rcx.as_mut().unwrap();
-        rcx.window.request_redraw();
+    pub fn resized(&mut self) -> anyhow::Result<()> {
+        self.rcx.as_mut().context("Wrong init")?.recreate_swapchain = true;
+
+        Ok(())
+    }
+
+    pub fn redraw(&mut self) -> anyhow::Result<()> {
+        let rcx = self.rcx.as_mut().context("Wat?")?;
+
+        let window_size = rcx.window.inner_size();
+
+        if window_size.width == 0 || window_size.height == 0 {
+            return Ok(());
+        }
+
+        rcx.previous_frame_end
+            .as_mut()
+            .context("What?")?
+            .cleanup_finished();
+
+        if rcx.recreate_swapchain {
+            let (new_swapchain, new_images) = rcx.swapchain.recreate(SwapchainCreateInfo {
+                image_extent: window_size.into(),
+                ..rcx.swapchain.create_info()
+            })?;
+
+            rcx.swapchain = new_swapchain;
+            rcx.framebuffers = window_size_dependent_setup(&new_images, &rcx.render_pass)?;
+            rcx.viewport.extent = window_size.into();
+            rcx.recreate_swapchain = false;
+        }
+
+        let (image_index, suboptimal, acquire_future) =
+            match acquire_next_image(rcx.swapchain.clone(), None).map_err(Validated::unwrap) {
+                Ok(r) => r,
+                Err(VulkanError::OutOfDate) => {
+                    rcx.recreate_swapchain = true;
+                    return Ok(());
+                }
+                Err(e) => return Err(anyhow!(e)),
+            };
+
+        if suboptimal {
+            rcx.recreate_swapchain = true;
+        }
+
+        let mut builder = AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )?;
+
+        builder
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
+                    ..RenderPassBeginInfo::framebuffer(
+                        rcx.framebuffers[image_index as usize].clone(),
+                    )
+                },
+                SubpassBeginInfo {
+                    contents: SubpassContents::Inline,
+                    ..Default::default()
+                },
+            )?
+            .set_viewport(0, [rcx.viewport.clone()].into_iter().collect())?
+            .bind_pipeline_graphics(rcx.pipeline.clone())?
+            .bind_vertex_buffers(0, self.vertex_buffer.clone())?
+            .bind_descriptor_sets(
+                vulkano::pipeline::PipelineBindPoint::Graphics,
+                rcx.pipeline.layout().clone(),
+                0,
+                rcx.descriptor_set.clone(),
+            )?
+            .push_constants(rcx.pipeline.layout().clone(), 0, self.push_consts);
+
+        unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
+
+        builder.end_render_pass(Default::default())?;
+
+        let command_buffer = builder.build()?;
+
+        let future = rcx
+            .previous_frame_end
+            .take()
+            .context("")?
+            .join(acquire_future)
+            .then_execute(self.queue.clone(), command_buffer)?
+            .then_swapchain_present(
+                self.queue.clone(),
+                SwapchainPresentInfo::swapchain_image_index(rcx.swapchain.clone(), image_index),
+            )
+            .then_signal_fence_and_flush();
+
+        match future.map_err(Validated::unwrap) {
+            Ok(future) => {
+                rcx.previous_frame_end = Some(future.boxed());
+            }
+            Err(VulkanError::OutOfDate) => {
+                rcx.recreate_swapchain = true;
+                rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed())
+            }
+            Err(e) => return Err(anyhow!(e)),
+        }
+
+        Ok(())
     }
 }
 
