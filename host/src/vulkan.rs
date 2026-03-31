@@ -1,7 +1,7 @@
 use crate::svodag;
 use anyhow::{anyhow, Context, Result};
 use glam::{vec2, vec3, Mat4, Vec2, Vec3};
-use shader::SvodagMetaData;
+use shader::{SvoIndex, SvodagMetaData};
 use std::sync::Arc;
 use vulkano::buffer::{
     AllocateBufferError, Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
@@ -71,8 +71,8 @@ pub struct Vulkan {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     vertex_buffer: Subbuffer<[MyVertex]>,
     svodag_buffer: Subbuffer<[u16]>,
+    svodag_depth: u32,
     svodag_metadata_buffer: Subbuffer<[shader::SvodagMetaData]>,
-    push_consts: shader::PushConsts,
     rcx: Option<RenderContext>,
 }
 
@@ -89,7 +89,11 @@ struct RenderContext {
 }
 
 impl Vulkan {
-    pub fn new(event_loop: &EventLoop<()>) -> anyhow::Result<Self> {
+    pub fn new(
+        event_loop: &EventLoop<()>,
+        serialized_svodag: &[u16],
+        svodag_depth: u32,
+    ) -> anyhow::Result<Self> {
         let library = VulkanLibrary::new()?;
         let required_extensions = Surface::required_extensions(&event_loop)?;
         let instance = Instance::new(
@@ -190,11 +194,6 @@ impl Vulkan {
         )
         .context("Cannot create VBO")?;
 
-        let (svodag, root) = svodag::get_example_svodag(7);
-        let (serialized, mapping) = svodag.serialize();
-
-        let push_consts = shader::PushConsts::new(5, mapping[svodag.to_index(&root)]);
-
         let svodag_buffer = Buffer::from_iter(
             memory_allocator.clone(),
             BufferCreateInfo {
@@ -206,10 +205,10 @@ impl Vulkan {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            serialized,
+            serialized_svodag.iter().map(|x| *x),
         )?;
 
-        let svodag_metadata_buffer = Buffer::from_iter(
+        let svodag_metadata_buffer = Buffer::new_slice(
             memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER,
@@ -220,10 +219,7 @@ impl Vulkan {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            vec![SvodagMetaData::new(
-                mapping[svodag.to_index(&root)],
-                Mat4::IDENTITY,
-            )],
+            10,
         )?;
 
         let rcx = None;
@@ -235,8 +231,8 @@ impl Vulkan {
             command_buffer_allocator,
             vertex_buffer,
             svodag_buffer,
+            svodag_depth,
             svodag_metadata_buffer,
-            push_consts,
             rcx,
         })
     }
@@ -369,10 +365,7 @@ impl Vulkan {
         let descriptor_set = DescriptorSet::new(
             descriptor_set_allocator.clone(),
             descriptor_set_layout.clone(),
-            [
-                WriteDescriptorSet::buffer(0, self.svodag_buffer.clone()),
-                WriteDescriptorSet::buffer(1, self.svodag_metadata_buffer.clone()),
-            ],
+            [WriteDescriptorSet::buffer(0, self.svodag_buffer.clone())],
             [],
         )?;
 
@@ -407,7 +400,7 @@ impl Vulkan {
         Ok(())
     }
 
-    pub fn redraw(&mut self) -> anyhow::Result<()> {
+    pub fn redraw(&mut self, root_indices: &[SvoIndex]) -> anyhow::Result<()> {
         let rcx = self.rcx.as_mut().context("Wat?")?;
 
         let window_size = rcx.window.inner_size();
@@ -475,7 +468,11 @@ impl Vulkan {
                 0,
                 rcx.descriptor_set.clone(),
             )?
-            .push_constants(rcx.pipeline.layout().clone(), 0, self.push_consts);
+            .push_constants(
+                rcx.pipeline.layout().clone(),
+                0,
+                shader::PushConsts::new(self.svodag_depth, root_indices[0]),
+            );
 
         unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
 

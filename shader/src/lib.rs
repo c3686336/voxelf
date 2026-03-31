@@ -265,7 +265,6 @@ pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u16],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] metadata: &[SvodagMetaData],
     #[spirv(push_constant)] constants: &PushConsts,
 ) {
     let svodag = SerializedSvodagView::from_slice(buffer);
@@ -289,7 +288,7 @@ pub fn main_fs(
         film_point.normalize(),
         constants.max_depth,
         svodag,
-        metadata[0].root_index,
+        constants.root_index,
     );
 
     if result {

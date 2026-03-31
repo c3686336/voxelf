@@ -3,7 +3,9 @@ pub mod svodag;
 pub mod vulkan;
 
 use anyhow::{anyhow, Context, Result};
-use svodag::Svodag;
+use glam::Mat4;
+use shader::SvoIndex;
+use svodag::{SvoNodeRef, Svodag};
 use vulkan::Vulkan;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -11,21 +13,38 @@ use winit::event_loop::{self, EventLoop};
 
 const SHADER: &[u8] = include_bytes!(env!("shader.spv"));
 
+struct Object {
+    root: SvoNodeRef,
+    transform: Mat4,
+}
+
 struct App {
     vulkan: Vulkan,
+    svodag: Svodag,
+    index_mapping: Vec<SvoIndex>,
+    objects: Vec<Object>,
 }
 
 impl App {
     pub fn new(event_loop: &EventLoop<()>) -> anyhow::Result<Self> {
+        let (svodag, root) = svodag::get_example_svodag(7);
+        let (serialized, index_mapping) = svodag.serialize();
+
         Ok(Self {
-            vulkan: Vulkan::new(event_loop)?,
+            vulkan: Vulkan::new(event_loop, serialized.as_ref(), 7)?,
+            svodag,
+            index_mapping,
+            objects: vec![Object {
+                root,
+                transform: Mat4::IDENTITY,
+            }],
         })
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        self.vulkan.resumed(event_loop);
+        self.vulkan.resumed(event_loop).unwrap();
     }
 
     fn window_event(
@@ -39,7 +58,10 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => self.vulkan.resized().unwrap(),
-            WindowEvent::RedrawRequested => self.vulkan.redraw().unwrap(),
+            WindowEvent::RedrawRequested => self
+                .vulkan
+                .redraw(&[self.index_mapping[self.svodag.to_index(&self.objects[0].root)]])
+                .unwrap(),
             _ => {}
         }
     }
