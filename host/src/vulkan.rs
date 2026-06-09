@@ -1,5 +1,6 @@
 use crate::svodag;
 use anyhow::{anyhow, Context, Result};
+use egui_winit_vulkano::{egui, Gui, GuiConfig};
 use glam::{vec2, vec3, Mat4, Vec2, Vec3};
 use shader::{SvoIndex, SvodagMetaData};
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use vulkano::device::{
 };
 use vulkano::format::Format;
 use vulkano::image::view::ImageView;
-use vulkano::image::{Image, ImageCreateInfo, ImageType, ImageUsage};
+use vulkano::image::{Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
@@ -83,6 +84,7 @@ struct RenderContext {
     framebuffers: Vec<Arc<Framebuffer>>,
     pipeline: Arc<GraphicsPipeline>,
     viewport: Viewport,
+    gui: Gui,
     recreate_swapchain: bool,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     descriptor_set: Arc<DescriptorSet>,
@@ -258,7 +260,7 @@ impl Vulkan {
 
             Swapchain::new(
                 self.device.clone(),
-                surface,
+                surface.clone(),
                 SwapchainCreateInfo {
                     min_image_count: surface_capabilities.min_image_count.max(2),
                     image_format,
@@ -274,20 +276,20 @@ impl Vulkan {
             )?
         };
 
-        let render_pass = vulkano::single_pass_renderpass!(
+        let render_pass = vulkano::ordered_passes_renderpass!(
             self.device.clone(),
             attachments: {
                 color: {
                     format: swapchain.image_format(),
-                    samples: 1,
+                    samples: SampleCount::Sample1,
                     load_op: Clear,
                     store_op: Store,
                 },
             },
-            pass: {
-                color: [color],
-                depth_stencil: {},
-            },
+            passes: [
+                { color: [color], depth_stencil: {}, input: [] },
+                { color: [color], depth_stencil: {}, input: [] },
+            ],
         )?;
 
         let framebuffers = window_size_dependent_setup(&images, &render_pass)?;
@@ -350,6 +352,18 @@ impl Vulkan {
             )
         }?;
 
+        let gui = Gui::new_with_subpass(
+            event_loop,
+            surface,
+            self.queue.clone(),
+            Subpass::from(render_pass.clone(), 1).context("Could not create egui subpass")?,
+            swapchain.image_format(),
+            GuiConfig {
+                allow_srgb_render_target: true,
+                ..GuiConfig::default()
+            },
+        );
+
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
             self.device.clone(),
             Default::default(),
@@ -386,6 +400,7 @@ impl Vulkan {
             framebuffers,
             pipeline,
             viewport,
+            gui,
             recreate_swapchain,
             previous_frame_end,
             descriptor_set,
@@ -398,6 +413,16 @@ impl Vulkan {
         self.rcx.as_mut().context("Wrong init")?.recreate_swapchain = true;
 
         Ok(())
+    }
+
+    pub fn window_event(&mut self, event: &WindowEvent) -> bool {
+        self.rcx.as_mut().is_some_and(|rcx| rcx.gui.update(event))
+    }
+
+    pub fn request_redraw(&self) {
+        if let Some(rcx) = &self.rcx {
+            rcx.window.request_redraw();
+        }
     }
 
     pub fn redraw(&mut self, root_indices: &[SvoIndex]) -> anyhow::Result<()> {
@@ -425,6 +450,19 @@ impl Vulkan {
             rcx.viewport.extent = window_size.into();
             rcx.recreate_swapchain = false;
         }
+
+        rcx.gui.immediate_ui(|gui| {
+            let ctx = gui.context();
+            egui::Window::new("Voxelf")
+                .default_pos([12.0, 12.0])
+                .show(&ctx, |ui| {
+                    ui.heading("Voxelf");
+                    ui.label(format!("SVoDAG depth: {}", self.svodag_depth));
+                    ui.label(format!("Root objects: {}", root_indices.len()));
+                    ui.separator();
+                    ui.label("egui overlay boilerplate is wired into the Vulkan render pass.");
+                });
+        });
 
         let (image_index, suboptimal, acquire_future) =
             match acquire_next_image(rcx.swapchain.clone(), None).map_err(Validated::unwrap) {
@@ -472,9 +510,22 @@ impl Vulkan {
                 rcx.pipeline.layout().clone(),
                 0,
                 shader::PushConsts::new(self.svodag_depth, root_indices[0]),
-            );
+            )?;
 
         unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
+
+        builder.next_subpass(
+            Default::default(),
+            SubpassBeginInfo {
+                contents: SubpassContents::SecondaryCommandBuffers,
+                ..Default::default()
+            },
+        )?;
+
+        let gui_command_buffer = rcx
+            .gui
+            .draw_on_subpass_image([window_size.width, window_size.height]);
+        builder.execute_commands(gui_command_buffer)?;
 
         builder.end_render_pass(Default::default())?;
 

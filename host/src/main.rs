@@ -53,17 +53,24 @@ impl ApplicationHandler for App {
         window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
+        let _egui_consumed = self.vulkan.window_event(&event);
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => self.vulkan.resized().unwrap(),
+            WindowEvent::ScaleFactorChanged { .. } => self.vulkan.resized().unwrap(),
             WindowEvent::RedrawRequested => self
                 .vulkan
                 .redraw(&[self.index_mapping[self.svodag.to_index(&self.objects[0].root)]])
                 .unwrap(),
             _ => {}
         }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &event_loop::ActiveEventLoop) {
+        self.vulkan.request_redraw();
     }
 }
 
