@@ -2,7 +2,10 @@
 
 extern crate spirv_std;
 
-use spirv_std::glam::{vec2, vec3, vec4, Mat4, Vec2, Vec3, Vec4};
+#[cfg(test)]
+extern crate std;
+
+use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
@@ -295,5 +298,235 @@ pub fn main_fs(
         *output = vec4(1.0, 0.0, 0.0, 1.0);
     } else {
         *output = vec4(0.0, 1.0, 0.0, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::vec::Vec;
+
+    fn index(raw: u16) -> SvoIndex {
+        unsafe { SvoIndex::from_raw(raw) }
+    }
+
+    fn single_voxel_at_origin_depth_3() -> [u16; 7] {
+        [0x0100, 2, 0x0100, 4, 0x0100, 6, 1]
+    }
+
+    fn morton_at(position: [u32; 3], level: u32, max_level: u32) -> u8 {
+        let shift_amount = max_level - level - 1;
+        let x = (position[0] >> shift_amount) & 1;
+        let y = (position[1] >> shift_amount) & 1;
+        let z = (position[2] >> shift_amount) & 1;
+
+        ((x << 2) | (y << 1) | z) as u8
+    }
+
+    fn single_voxel(position: [u32; 3], depth: u32) -> Vec<u16> {
+        let mut data = Vec::new();
+
+        for level in 0..depth {
+            let child_mask = 1_u16 << morton_at(position, level, depth);
+            data.push(child_mask << 8);
+            data.push(data.len() as u16 + 1);
+        }
+
+        data.push(1);
+        data
+    }
+
+    #[test]
+    fn constructors_initialize_fields_and_padding() {
+        let root_index = index(17);
+        let push_consts = PushConsts::new(5, root_index);
+
+        assert_eq!(push_consts.max_depth, 5);
+        assert_eq!(push_consts.root_index.to_raw(), 17);
+        assert_eq!(push_consts.pad, 0);
+
+        let metadata = SvodagMetaData::new(root_index, Mat4::IDENTITY);
+        assert_eq!(metadata.root_index.to_raw(), 17);
+        assert_eq!(metadata.pad, 0);
+        assert_eq!(metadata.inv_model_transform, Mat4::IDENTITY);
+    }
+
+    #[test]
+    fn serialized_view_reads_node_metadata_and_children() {
+        let data = [0b1010_0101_0000_0001, 3, 7, 11, 13];
+        let view = SerializedSvodagView::from_slice(&data);
+        let root = index(0);
+
+        assert_eq!(view.get_data(), &data);
+        assert_eq!(view.get_childmask(root), 0b1010_0101);
+        assert!(view.is_leaf(root));
+        assert_eq!(view.get_child(root, 0).to_raw(), 3);
+        assert_eq!(view.get_child(root, 2).to_raw(), 11);
+    }
+
+    #[test]
+    fn index_of_morton_uses_packed_child_mask_order() {
+        let data = [0b1000_1001_0000_0000];
+        let view = SerializedSvodagView::from_slice(&data);
+        let root = index(0);
+
+        assert_eq!(index_of_morton(&view, root, 0), 2);
+        assert_eq!(index_of_morton(&view, root, 3), 1);
+        assert_eq!(index_of_morton(&view, root, 7), 0);
+    }
+
+    #[test]
+    fn raymarch_hits_serialized_single_voxel() {
+        let data = single_voxel_at_origin_depth_3();
+
+        assert!(raymarch(
+            vec3(0.5, 1.05, 1.05),
+            vec3(1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_hits_far_positive_direction_voxel() {
+        let data = single_voxel([7, 7, 7], 3);
+
+        assert!(raymarch(
+            vec3(0.5, 1.95, 1.95),
+            vec3(1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_hits_negative_direction_voxel() {
+        let data = single_voxel([7, 7, 7], 3);
+
+        assert!(raymarch(
+            vec3(2.5, 1.95, 1.95),
+            vec3(-1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_misses_negative_direction_voxel() {
+        let data = single_voxel([7, 7, 7], 3);
+
+        assert!(!raymarch(
+            vec3(2.5, 1.5, 1.5),
+            vec3(-1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_hits_diagonal_voxel() {
+        let data = single_voxel([1, 1, 1], 2);
+
+        assert!(raymarch(
+            vec3(0.5, 0.5, 0.5),
+            vec3(1.0, 1.0, 1.0).normalize(),
+            2,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_hits_when_starting_inside_voxel() {
+        let data = single_voxel_at_origin_depth_3();
+
+        assert!(raymarch(
+            vec3(1.05, 1.05, 1.05),
+            vec3(1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_misses_serialized_single_voxel() {
+        let data = single_voxel_at_origin_depth_3();
+
+        assert!(!raymarch(
+            vec3(0.5, 1.5, 1.5),
+            vec3(1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_hits_root_leaf() {
+        let data = [1];
+
+        assert!(raymarch(
+            vec3(1.5, 1.5, 3.0),
+            vec3(0.0, 0.0, -1.0),
+            1,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_rejects_ray_outside_root_bounds() {
+        let data = [1];
+
+        assert!(!raymarch(
+            vec3(3.0, 3.0, 3.0),
+            vec3(1.0, 0.0, 0.0),
+            1,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn vertex_shader_writes_position_and_uv() {
+        let mut output = Vec4::ZERO;
+        let mut uv_output = Vec2::ZERO;
+
+        main_vs(
+            &mut output,
+            vec2(-0.25, 0.75),
+            vec2(0.2, 0.8),
+            &mut uv_output,
+        );
+
+        assert_eq!(output, vec4(-0.25, 0.75, 0.0, 1.0));
+        assert_eq!(uv_output, vec2(0.2, 0.8));
+    }
+
+    #[test]
+    fn fragment_shader_outputs_red_for_hit() {
+        let data = [1];
+        let constants = PushConsts::new(1, index(0));
+        let mut output = Vec4::ZERO;
+
+        main_fs(&mut output, vec2(0.5, 0.5), &data, &constants);
+
+        assert_eq!(output, vec4(1.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn fragment_shader_outputs_green_for_miss() {
+        let data = single_voxel_at_origin_depth_3();
+        let constants = PushConsts::new(3, index(0));
+        let mut output = Vec4::ZERO;
+
+        main_fs(&mut output, vec2(0.5, 0.5), &data, &constants);
+
+        assert_eq!(output, vec4(0.0, 1.0, 0.0, 1.0));
     }
 }
