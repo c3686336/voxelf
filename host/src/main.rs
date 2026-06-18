@@ -32,6 +32,38 @@ struct Camera {
     last_cursor_position: Option<PhysicalPosition<f64>>,
 }
 
+struct FrameTiming {
+    delta_seconds: f32,
+    fps: f32,
+}
+
+struct FrameTimer {
+    last_frame: Instant,
+}
+
+impl FrameTimer {
+    fn new() -> Self {
+        Self {
+            last_frame: Instant::now(),
+        }
+    }
+
+    fn tick(&mut self) -> FrameTiming {
+        let now = Instant::now();
+        let delta_seconds = (now - self.last_frame).as_secs_f32();
+        self.last_frame = now;
+
+        FrameTiming {
+            delta_seconds: delta_seconds.min(0.1),
+            fps: if delta_seconds > 0.0 {
+                1.0 / delta_seconds
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
 impl Camera {
     fn new() -> Self {
         Self {
@@ -155,7 +187,7 @@ struct App {
     index_mapping: Vec<SvoIndex>,
     objects: Vec<Object>,
     camera: Camera,
-    last_frame: Instant,
+    frame_timer: FrameTimer,
 }
 
 impl App {
@@ -172,22 +204,12 @@ impl App {
                 transform: Mat4::IDENTITY,
             }],
             camera: Camera::new(),
-            last_frame: Instant::now(),
+            frame_timer: FrameTimer::new(),
         })
     }
 
-    fn update_camera(&mut self) -> f32 {
-        let now = Instant::now();
-        let delta_seconds = (now - self.last_frame).as_secs_f32();
-        self.last_frame = now;
-
-        self.camera.update(delta_seconds.min(0.1));
-
-        if delta_seconds > 0.0 {
-            1.0 / delta_seconds
-        } else {
-            0.0
-        }
+    fn update_camera(&mut self, delta_seconds: f32) {
+        self.camera.update(delta_seconds);
     }
 }
 
@@ -214,12 +236,13 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(_size) => self.vulkan.resized().unwrap(),
             WindowEvent::ScaleFactorChanged { .. } => self.vulkan.resized().unwrap(),
             WindowEvent::RedrawRequested => {
-                let fps = self.update_camera();
+                let frame_timing = self.frame_timer.tick();
+                self.update_camera(frame_timing.delta_seconds);
                 self.vulkan
                     .redraw(
                         &[self.index_mapping[self.svodag.to_index(&self.objects[0].root)]],
                         self.camera.view(),
-                        fps,
+                        frame_timing.fps,
                     )
                     .unwrap()
             }
