@@ -31,6 +31,30 @@ impl PushConsts {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
+pub struct CameraData {
+    pub origin: Vec4,
+    pub direction: Vec4,
+    pub up: Vec4,
+    pub right: Vec4,
+}
+
+impl CameraData {
+    pub fn new(origin: [f32; 3], direction: [f32; 3], up: [f32; 3], right: [f32; 3]) -> Self {
+        Self {
+            origin: vec4(origin[0], origin[1], origin[2], 0.0),
+            direction: vec4(direction[0], direction[1], direction[2], 0.0),
+            up: vec4(up[0], up[1], up[2], 0.0),
+            right: vec4(right[0], right[1], right[2], 0.0),
+        }
+    }
+}
+
+fn vec4_to_vec3(value: Vec4) -> Vec3 {
+    vec3(value.x, value.y, value.z)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct SvodagMetaData {
     pub root_index: SvoIndex,
     pad: u16,
@@ -98,7 +122,7 @@ fn index_of_morton(svodag: &SerializedSvodagView, node: SvoIndex, morton: u8) ->
 pub fn raymarch(
     origin: Vec3,
     direction: Vec3,
-    max_depth: u32,
+    _max_depth: u32,
     svodag: SerializedSvodagView,
     root_ref: SvoIndex,
 ) -> bool {
@@ -128,6 +152,7 @@ pub fn raymarch(
     if tmax <= 0.0 || tmin > tmax {
         return false;
     }
+    tmin = tmin.max(0.0);
 
     let mut position = Vec3::ONE;
     let mut parent = root_ref;
@@ -268,14 +293,16 @@ pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u16],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] camera: &[CameraData],
     #[spirv(push_constant)] constants: &PushConsts,
 ) {
     let svodag = SerializedSvodagView::from_slice(buffer);
+    let camera = camera[0];
 
-    let camera_origin = vec3(1.5, 1.5, 3.0);
-    let camera_direction = vec3(0.0, 0.0, -1.0);
-    let camera_up = vec3(0.0, 1.0, 0.0);
-    let camera_right = camera_direction.cross(camera_up);
+    let camera_origin = vec4_to_vec3(camera.origin);
+    let camera_direction = vec4_to_vec3(camera.direction);
+    let camera_up = vec4_to_vec3(camera.up);
+    let camera_right = vec4_to_vec3(camera.right);
 
     let film_width = 2.0;
     let film_height = 2.0;
@@ -310,6 +337,19 @@ mod tests {
         unsafe { SvoIndex::from_raw(raw) }
     }
 
+    fn default_push_consts(max_depth: u32, root_index: SvoIndex) -> PushConsts {
+        PushConsts::new(max_depth, root_index)
+    }
+
+    fn default_camera_data() -> [CameraData; 1] {
+        [CameraData::new(
+            [1.5, 1.5, 3.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+        )]
+    }
+
     fn single_voxel_at_origin_depth_3() -> [u16; 7] {
         [0x0100, 2, 0x0100, 4, 0x0100, 6, 1]
     }
@@ -339,11 +379,17 @@ mod tests {
     #[test]
     fn constructors_initialize_fields_and_padding() {
         let root_index = index(17);
-        let push_consts = PushConsts::new(5, root_index);
+        let push_consts = default_push_consts(5, root_index);
 
         assert_eq!(push_consts.max_depth, 5);
         assert_eq!(push_consts.root_index.to_raw(), 17);
         assert_eq!(push_consts.pad, 0);
+
+        let camera = default_camera_data()[0];
+        assert_eq!(camera.origin, vec4(1.5, 1.5, 3.0, 0.0));
+        assert_eq!(camera.direction, vec4(0.0, 0.0, -1.0, 0.0));
+        assert_eq!(camera.up, vec4(0.0, 1.0, 0.0, 0.0));
+        assert_eq!(camera.right, vec4(1.0, 0.0, 0.0, 0.0));
 
         let metadata = SvodagMetaData::new(root_index, Mat4::IDENTITY);
         assert_eq!(metadata.root_index.to_raw(), 17);
@@ -454,6 +500,45 @@ mod tests {
     }
 
     #[test]
+    fn raymarch_hits_when_starting_inside_volume() {
+        let data = single_voxel([7, 7, 7], 3);
+
+        assert!(raymarch(
+            vec3(1.5, 1.95, 1.95),
+            vec3(1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_misses_when_starting_inside_volume() {
+        let data = single_voxel([7, 7, 7], 3);
+
+        assert!(!raymarch(
+            vec3(1.5, 1.5, 1.5),
+            vec3(1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
+    fn raymarch_does_not_hit_mirrored_voxel_when_starting_inside_volume() {
+        let data = single_voxel([0, 7, 7], 3);
+
+        assert!(!raymarch(
+            vec3(1.5, 1.95, 1.95),
+            vec3(1.0, 0.0, 0.0),
+            3,
+            SerializedSvodagView::from_slice(&data),
+            index(0),
+        ));
+    }
+
+    #[test]
     fn raymarch_misses_serialized_single_voxel() {
         let data = single_voxel_at_origin_depth_3();
 
@@ -511,10 +596,11 @@ mod tests {
     #[test]
     fn fragment_shader_outputs_red_for_hit() {
         let data = [1];
-        let constants = PushConsts::new(1, index(0));
+        let camera = default_camera_data();
+        let constants = default_push_consts(1, index(0));
         let mut output = Vec4::ZERO;
 
-        main_fs(&mut output, vec2(0.5, 0.5), &data, &constants);
+        main_fs(&mut output, vec2(0.5, 0.5), &data, &camera, &constants);
 
         assert_eq!(output, vec4(1.0, 0.0, 0.0, 1.0));
     }
@@ -522,10 +608,11 @@ mod tests {
     #[test]
     fn fragment_shader_outputs_green_for_miss() {
         let data = single_voxel_at_origin_depth_3();
-        let constants = PushConsts::new(3, index(0));
+        let camera = default_camera_data();
+        let constants = default_push_consts(3, index(0));
         let mut output = Vec4::ZERO;
 
-        main_fs(&mut output, vec2(0.5, 0.5), &data, &constants);
+        main_fs(&mut output, vec2(0.5, 0.5), &data, &camera, &constants);
 
         assert_eq!(output, vec4(0.0, 1.0, 0.0, 1.0));
     }

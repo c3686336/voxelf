@@ -1,5 +1,5 @@
 use crate::{
-    svodag::{SvoNode, SvoNodeRef, SvodagQueryResult},
+    svodag::{SvoNode, SvoNodeRef},
     Svodag,
 };
 use glam::*;
@@ -20,8 +20,6 @@ fn pos_to_morton(position: Vec3 /*position in 1~2*/, depth: usize) -> usize {
 
 pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNodeRef) -> bool {
     // The cube is at (1, 1, 1)
-
-    let max_depth = svodag.depth;
 
     let dir_threshold = -direction.abs().clamp(Vec3::ONE * f32::EPSILON, Vec3::MAX);
 
@@ -52,6 +50,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
     if tmax <= 0.0 || tmin > tmax {
         return false;
     }
+    tmin = tmin.max(0.0);
 
     let mut position = Vec3::ONE;
     let mut parent = svodag.deref(root_ref);
@@ -253,6 +252,47 @@ mod tests {
 
         assert!(raymarch(origin, direction, &dag, &root));
     }
+
+    #[test]
+    fn test_ray_starts_inside_volume_hit() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
+
+        // Starts inside [1, 2]^3, before the occupied far-x voxel slab.
+        let origin = vec3(1.5, 1.95, 1.95);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(raymarch(origin, direction, &dag, &root));
+    }
+
+    #[test]
+    fn test_ray_starts_inside_volume_miss() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
+
+        // Starts inside the root volume but outside the occupied y/z slab.
+        let origin = vec3(1.5, 1.5, 1.5);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(!raymarch(origin, direction, &dag, &root));
+    }
+
+    #[test]
+    fn test_ray_starts_inside_volume_does_not_hit_mirrored_voxel() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(0, 7, 7), depth);
+
+        // The occupied voxel is behind the ray along x. Starting inside the root volume
+        // must not report the mirrored far-x voxel as a hit.
+        let origin = vec3(1.5, 1.95, 1.95);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(!raymarch(origin, direction, &dag, &root));
+    }
+
     #[test]
     fn test_positive_direction_hit_far() {
         let depth = 3;
@@ -383,6 +423,66 @@ mod tests {
         let direction = vec3(1.0, 0.0, 0.0);
 
         assert!(shader::raymarch(
+            origin,
+            direction,
+            dag.depth,
+            shader::SerializedSvodagView::from_slice(&serialized),
+            mapping[dag.to_index(&root)]
+        ));
+    }
+
+    #[test]
+    fn test_ray_starts_inside_volume_hit_serialized() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
+
+        let (serialized, mapping) = dag.serialize();
+
+        let origin = vec3(1.5, 1.95, 1.95);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(shader::raymarch(
+            origin,
+            direction,
+            dag.depth,
+            shader::SerializedSvodagView::from_slice(&serialized),
+            mapping[dag.to_index(&root)]
+        ));
+    }
+
+    #[test]
+    fn test_ray_starts_inside_volume_miss_serialized() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
+
+        let (serialized, mapping) = dag.serialize();
+
+        let origin = vec3(1.5, 1.5, 1.5);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(!shader::raymarch(
+            origin,
+            direction,
+            dag.depth,
+            shader::SerializedSvodagView::from_slice(&serialized),
+            mapping[dag.to_index(&root)]
+        ));
+    }
+
+    #[test]
+    fn test_ray_starts_inside_volume_does_not_hit_mirrored_voxel_serialized() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let root = dag.insert_mutate(None, uvec3(0, 7, 7), depth);
+
+        let (serialized, mapping) = dag.serialize();
+
+        let origin = vec3(1.5, 1.95, 1.95);
+        let direction = vec3(1.0, 0.0, 0.0);
+
+        assert!(!shader::raymarch(
             origin,
             direction,
             dag.depth,

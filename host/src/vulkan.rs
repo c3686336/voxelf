@@ -1,43 +1,35 @@
-use crate::svodag;
 use anyhow::{anyhow, Context, Result};
 use egui_winit_vulkano::{egui, Gui, GuiConfig};
-use glam::{vec2, vec3, Mat4, Vec2, Vec3};
-use shader::{SvoIndex, SvodagMetaData};
+use glam::{vec2, Vec2};
+use shader::SvoIndex;
 use std::sync::Arc;
-use vulkano::buffer::{
-    AllocateBufferError, Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
-};
+use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::{
     StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
 };
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
-    SubpassBeginInfo, SubpassContents, SubpassEndInfo,
+    AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
+    SubpassContents,
 };
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::device::{
-    self, physical, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue,
-    QueueCreateInfo, QueueFlags,
+    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags,
 };
-use vulkano::format::Format;
 use vulkano::image::view::ImageView;
-use vulkano::image::{Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount};
-use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions};
+use vulkano::image::{Image, ImageUsage, SampleCount};
+use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
-use vulkano::pipeline::graphics::viewport;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{self, DynamicState, Pipeline};
-use vulkano::pipeline::{
-    GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateFlags, PipelineShaderStageCreateInfo,
-};
+use vulkano::pipeline::{DynamicState, Pipeline};
+use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo};
 use vulkano::render_pass::{RenderPass, Subpass};
 use vulkano::shader::{ShaderModule, ShaderModuleCreateInfo};
@@ -45,16 +37,13 @@ use vulkano::swapchain::acquire_next_image;
 use vulkano::swapchain::SwapchainCreateInfo;
 use vulkano::swapchain::SwapchainPresentInfo;
 use vulkano::swapchain::{Surface, Swapchain};
-use vulkano::sync::{self, semaphore, GpuFuture};
+use vulkano::sync::{self, GpuFuture};
 use vulkano::Validated;
 use vulkano::VulkanError;
-use vulkano::{library, render_pass, VulkanLibrary};
-use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
-};
+use vulkano::VulkanLibrary;
+use winit::{event::WindowEvent, event_loop::EventLoop, window::Window};
+
+const CAMERA_BUFFER_COUNT: usize = 3;
 
 #[derive(BufferContents, Vertex)]
 #[repr(C)]
@@ -72,6 +61,7 @@ pub struct Vulkan {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     vertex_buffer: Subbuffer<[MyVertex]>,
     svodag_buffer: Subbuffer<[u16]>,
+    camera_buffers: Vec<Subbuffer<[CameraBuffer]>>,
     svodag_depth: u32,
     svodag_metadata_buffer: Subbuffer<[shader::SvodagMetaData]>,
     rcx: Option<RenderContext>,
@@ -87,7 +77,67 @@ struct RenderContext {
     gui: Gui,
     recreate_swapchain: bool,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
-    descriptor_set: Arc<DescriptorSet>,
+    descriptor_sets: Vec<Arc<DescriptorSet>>,
+    camera_buffer_index: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CameraView {
+    pub origin: [f32; 3],
+    pub direction: [f32; 3],
+    pub up: [f32; 3],
+    pub right: [f32; 3],
+}
+
+impl Default for CameraView {
+    fn default() -> Self {
+        Self {
+            origin: [1.5, 1.5, 3.0],
+            direction: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            right: [1.0, 0.0, 0.0],
+        }
+    }
+}
+
+#[derive(BufferContents, Clone, Copy)]
+#[repr(C)]
+struct CameraBuffer {
+    origin: [f32; 4],
+    direction: [f32; 4],
+    up: [f32; 4],
+    right: [f32; 4],
+}
+
+impl CameraBuffer {
+    fn from_view(view: CameraView) -> Self {
+        Self {
+            origin: extend_vec3(view.origin),
+            direction: extend_vec3(view.direction),
+            up: extend_vec3(view.up),
+            right: extend_vec3(view.right),
+        }
+    }
+}
+
+fn extend_vec3(value: [f32; 3]) -> [f32; 4] {
+    [value[0], value[1], value[2], 0.0]
+}
+
+fn write_camera_buffer(
+    camera_buffers: &[Subbuffer<[CameraBuffer]>],
+    start_index: usize,
+    camera: CameraView,
+) -> Option<usize> {
+    for offset in 0..camera_buffers.len() {
+        let index = (start_index + offset) % camera_buffers.len();
+        if let Ok(mut write) = camera_buffers[index].write() {
+            write[0] = CameraBuffer::from_view(camera);
+            return Some(index);
+        }
+    }
+
+    None
 }
 
 impl Vulkan {
@@ -224,6 +274,24 @@ impl Vulkan {
             10,
         )?;
 
+        let camera_buffers = (0..CAMERA_BUFFER_COUNT)
+            .map(|_| {
+                Buffer::from_iter(
+                    memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::STORAGE_BUFFER,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    [CameraBuffer::from_view(CameraView::default())],
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         let rcx = None;
 
         Ok(Vulkan {
@@ -233,6 +301,7 @@ impl Vulkan {
             command_buffer_allocator,
             vertex_buffer,
             svodag_buffer,
+            camera_buffers,
             svodag_depth,
             svodag_metadata_buffer,
             rcx,
@@ -376,12 +445,21 @@ impl Vulkan {
             .get(descriptor_set_layout_index)
             .context("")?;
 
-        let descriptor_set = DescriptorSet::new(
-            descriptor_set_allocator.clone(),
-            descriptor_set_layout.clone(),
-            [WriteDescriptorSet::buffer(0, self.svodag_buffer.clone())],
-            [],
-        )?;
+        let descriptor_sets = self
+            .camera_buffers
+            .iter()
+            .map(|camera_buffer| {
+                DescriptorSet::new(
+                    descriptor_set_allocator.clone(),
+                    descriptor_set_layout.clone(),
+                    [
+                        WriteDescriptorSet::buffer(0, self.svodag_buffer.clone()),
+                        WriteDescriptorSet::buffer(1, camera_buffer.clone()),
+                    ],
+                    [],
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let viewport = Viewport {
             offset: [0.0, 0.0],
@@ -403,7 +481,8 @@ impl Vulkan {
             gui,
             recreate_swapchain,
             previous_frame_end,
-            descriptor_set,
+            descriptor_sets,
+            camera_buffer_index: 0,
         });
 
         Ok(())
@@ -425,7 +504,7 @@ impl Vulkan {
         }
     }
 
-    pub fn redraw(&mut self, root_indices: &[SvoIndex]) -> anyhow::Result<()> {
+    pub fn redraw(&mut self, root_indices: &[SvoIndex], camera: CameraView) -> anyhow::Result<()> {
         let rcx = self.rcx.as_mut().context("Wat?")?;
 
         let window_size = rcx.window.inner_size();
@@ -438,6 +517,13 @@ impl Vulkan {
             .as_mut()
             .context("What?")?
             .cleanup_finished();
+
+        let Some(descriptor_set_index) =
+            write_camera_buffer(&self.camera_buffers, rcx.camera_buffer_index, camera)
+        else {
+            return Ok(());
+        };
+        rcx.camera_buffer_index = (descriptor_set_index + 1) % self.camera_buffers.len();
 
         if rcx.recreate_swapchain {
             let (new_swapchain, new_images) = rcx.swapchain.recreate(SwapchainCreateInfo {
@@ -459,7 +545,12 @@ impl Vulkan {
                     ui.heading("Voxelf");
                     ui.label(format!("SVoDAG depth: {}", self.svodag_depth));
                     ui.label(format!("Root objects: {}", root_indices.len()));
+                    ui.label(format!(
+                        "Camera: {:.2}, {:.2}, {:.2}",
+                        camera.origin[0], camera.origin[1], camera.origin[2]
+                    ));
                     ui.separator();
+                    ui.label("W/A/S/D move, Shift/Space rise/drop, left mouse drag looks around.");
                     ui.label("egui overlay boilerplate is wired into the Vulkan render pass.");
                 });
         });
@@ -504,7 +595,7 @@ impl Vulkan {
                 vulkano::pipeline::PipelineBindPoint::Graphics,
                 rcx.pipeline.layout().clone(),
                 0,
-                rcx.descriptor_set.clone(),
+                rcx.descriptor_sets[descriptor_set_index].clone(),
             )?
             .push_constants(
                 rcx.pipeline.layout().clone(),
