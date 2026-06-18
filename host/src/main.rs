@@ -134,10 +134,10 @@ impl Camera {
             velocity -= right;
         }
         if self.pressed_keys.contains(&KeyCode::KeyQ) {
-            velocity -= Vec3::Y;
+            velocity += Vec3::Y;
         }
         if self.pressed_keys.contains(&KeyCode::KeyE) {
-            velocity += Vec3::Y;
+            velocity -= Vec3::Y;
         }
 
         if velocity.length_squared() > 0.0 {

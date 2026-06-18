@@ -563,7 +563,7 @@ impl Vulkan {
                     ));
                     ui.label(format!("FPS: {:.0}", fps));
                     ui.separator();
-                    ui.label("W/A/S/D move, Q/E drop/rise, left mouse drag looks around.");
+                    ui.label("W/A/S/D move, Q/E rise/drop, left mouse drag looks around.");
                     ui.label("egui overlay boilerplate is wired into the Vulkan render pass.");
                 });
         });
