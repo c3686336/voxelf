@@ -107,15 +107,17 @@ struct CameraBuffer {
     direction: [f32; 4],
     up: [f32; 4],
     right: [f32; 4],
+    viewport: [f32; 4],
 }
 
 impl CameraBuffer {
-    fn from_view(view: CameraView) -> Self {
+    fn from_view(view: CameraView, aspect_ratio: f32) -> Self {
         Self {
             origin: extend_vec3(view.origin),
             direction: extend_vec3(view.direction),
             up: extend_vec3(view.up),
             right: extend_vec3(view.right),
+            viewport: [aspect_ratio, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -128,11 +130,12 @@ fn write_camera_buffer(
     camera_buffers: &[Subbuffer<[CameraBuffer]>],
     start_index: usize,
     camera: CameraView,
+    aspect_ratio: f32,
 ) -> Option<usize> {
     for offset in 0..camera_buffers.len() {
         let index = (start_index + offset) % camera_buffers.len();
         if let Ok(mut write) = camera_buffers[index].write() {
-            write[0] = CameraBuffer::from_view(camera);
+            write[0] = CameraBuffer::from_view(camera, aspect_ratio);
             return Some(index);
         }
     }
@@ -287,7 +290,7 @@ impl Vulkan {
                             | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                         ..Default::default()
                     },
-                    [CameraBuffer::from_view(CameraView::default())],
+                    [CameraBuffer::from_view(CameraView::default(), 1.0)],
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -504,7 +507,12 @@ impl Vulkan {
         }
     }
 
-    pub fn redraw(&mut self, root_indices: &[SvoIndex], camera: CameraView) -> anyhow::Result<()> {
+    pub fn redraw(
+        &mut self,
+        root_indices: &[SvoIndex],
+        camera: CameraView,
+        fps: f32,
+    ) -> anyhow::Result<()> {
         let rcx = self.rcx.as_mut().context("Wat?")?;
 
         let window_size = rcx.window.inner_size();
@@ -518,9 +526,13 @@ impl Vulkan {
             .context("What?")?
             .cleanup_finished();
 
-        let Some(descriptor_set_index) =
-            write_camera_buffer(&self.camera_buffers, rcx.camera_buffer_index, camera)
-        else {
+        let aspect_ratio = window_size.width as f32 / window_size.height as f32;
+        let Some(descriptor_set_index) = write_camera_buffer(
+            &self.camera_buffers,
+            rcx.camera_buffer_index,
+            camera,
+            aspect_ratio,
+        ) else {
             return Ok(());
         };
         rcx.camera_buffer_index = (descriptor_set_index + 1) % self.camera_buffers.len();
@@ -549,8 +561,9 @@ impl Vulkan {
                         "Camera: {:.2}, {:.2}, {:.2}",
                         camera.origin[0], camera.origin[1], camera.origin[2]
                     ));
+                    ui.label(format!("FPS: {:.0}", fps));
                     ui.separator();
-                    ui.label("W/A/S/D move, Shift/Space rise/drop, left mouse drag looks around.");
+                    ui.label("W/A/S/D move, Q/E drop/rise, left mouse drag looks around.");
                     ui.label("egui overlay boilerplate is wired into the Vulkan render pass.");
                 });
         });

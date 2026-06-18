@@ -36,6 +36,7 @@ pub struct CameraData {
     pub direction: Vec4,
     pub up: Vec4,
     pub right: Vec4,
+    pub viewport: Vec4,
 }
 
 impl CameraData {
@@ -45,6 +46,7 @@ impl CameraData {
             direction: vec4(direction[0], direction[1], direction[2], 0.0),
             up: vec4(up[0], up[1], up[2], 0.0),
             right: vec4(right[0], right[1], right[2], 0.0),
+            viewport: vec4(1.0, 0.0, 0.0, 0.0),
         }
     }
 }
@@ -304,7 +306,7 @@ pub fn main_fs(
     let camera_up = vec4_to_vec3(camera.up);
     let camera_right = vec4_to_vec3(camera.right);
 
-    let film_width = 2.0;
+    let film_width = 2.0 * camera.viewport.x;
     let film_height = 2.0;
     let film_distance = 1.0;
 
@@ -390,6 +392,7 @@ mod tests {
         assert_eq!(camera.direction, vec4(0.0, 0.0, -1.0, 0.0));
         assert_eq!(camera.up, vec4(0.0, 1.0, 0.0, 0.0));
         assert_eq!(camera.right, vec4(1.0, 0.0, 0.0, 0.0));
+        assert_eq!(camera.viewport, vec4(1.0, 0.0, 0.0, 0.0));
 
         let metadata = SvodagMetaData::new(root_index, Mat4::IDENTITY);
         assert_eq!(metadata.root_index.to_raw(), 17);

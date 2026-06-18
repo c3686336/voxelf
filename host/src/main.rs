@@ -74,7 +74,7 @@ impl Camera {
                         let delta_x = position.x - last_position.x;
                         let delta_y = position.y - last_position.y;
 
-                        self.yaw -= delta_x as f32 * self.sensitivity;
+                        self.yaw += delta_x as f32 * self.sensitivity;
                         self.pitch += delta_y as f32 * self.sensitivity;
                         self.pitch = self.pitch.clamp(-1.5, 1.5);
                     }
@@ -86,14 +86,14 @@ impl Camera {
     }
 
     fn update(&mut self, delta_seconds: f32) {
-        let (direction, right, _) = self.basis();
+        let (forward, right) = self.movement_basis();
         let mut velocity = Vec3::ZERO;
 
         if self.pressed_keys.contains(&KeyCode::KeyW) {
-            velocity += direction;
+            velocity += forward;
         }
         if self.pressed_keys.contains(&KeyCode::KeyS) {
-            velocity -= direction;
+            velocity -= forward;
         }
         if self.pressed_keys.contains(&KeyCode::KeyD) {
             velocity += right;
@@ -101,12 +101,10 @@ impl Camera {
         if self.pressed_keys.contains(&KeyCode::KeyA) {
             velocity -= right;
         }
-        if self.pressed_keys.contains(&KeyCode::Space) {
+        if self.pressed_keys.contains(&KeyCode::KeyQ) {
             velocity -= Vec3::Y;
         }
-        if self.pressed_keys.contains(&KeyCode::ShiftLeft)
-            || self.pressed_keys.contains(&KeyCode::ShiftRight)
-        {
+        if self.pressed_keys.contains(&KeyCode::KeyE) {
             velocity += Vec3::Y;
         }
 
@@ -142,6 +140,13 @@ impl Camera {
 
         (direction, right, up)
     }
+
+    fn movement_basis(&self) -> (Vec3, Vec3) {
+        let forward = vec3(self.yaw.cos(), 0.0, self.yaw.sin()).normalize();
+        let right = forward.cross(Vec3::Y).normalize();
+
+        (forward, right)
+    }
 }
 
 struct App {
@@ -171,12 +176,18 @@ impl App {
         })
     }
 
-    fn update_camera(&mut self) {
+    fn update_camera(&mut self) -> f32 {
         let now = Instant::now();
-        let delta_seconds = (now - self.last_frame).as_secs_f32().min(0.1);
+        let delta_seconds = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        self.camera.update(delta_seconds);
+        self.camera.update(delta_seconds.min(0.1));
+
+        if delta_seconds > 0.0 {
+            1.0 / delta_seconds
+        } else {
+            0.0
+        }
     }
 }
 
@@ -203,11 +214,12 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(_size) => self.vulkan.resized().unwrap(),
             WindowEvent::ScaleFactorChanged { .. } => self.vulkan.resized().unwrap(),
             WindowEvent::RedrawRequested => {
-                self.update_camera();
+                let fps = self.update_camera();
                 self.vulkan
                     .redraw(
                         &[self.index_mapping[self.svodag.to_index(&self.objects[0].root)]],
                         self.camera.view(),
+                        fps,
                     )
                     .unwrap()
             }
