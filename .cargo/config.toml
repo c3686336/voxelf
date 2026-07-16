@@ -1,0 +1,4 @@
+[env]
+# spirv-tools-sys 0.13.2 enables -Werror, but GCC 16 reports an upstream
+# maybe-uninitialized false positive in decoration_manager.cpp.
+CXXFLAGS = "-Wno-error=maybe-uninitialized"
