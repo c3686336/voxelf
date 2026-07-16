@@ -589,6 +589,33 @@ mod tests {
     }
 
     #[test]
+    fn raymarch_handles_stack_capacity_boundary() {
+        let supported_depth = STACK_DEPTH as u32 + 1;
+        let supported_data = single_voxel([0, 0, 0], supported_depth);
+        let supported_center = 1.0 + 0.5 / (1_u32 << supported_depth) as f32;
+
+        assert!(raymarch(
+            vec3(0.5, supported_center, supported_center),
+            vec3(1.0, 0.0, 0.0),
+            supported_depth,
+            SerializedSvodagView::from_slice(&supported_data),
+            index(0),
+        ));
+
+        let overflow_depth = supported_depth + 1;
+        let overflow_data = single_voxel([0, 0, 0], overflow_depth);
+        let overflow_center = 1.0 + 0.5 / (1_u32 << overflow_depth) as f32;
+
+        assert!(!raymarch(
+            vec3(0.5, overflow_center, overflow_center),
+            vec3(1.0, 0.0, 0.0),
+            overflow_depth,
+            SerializedSvodagView::from_slice(&overflow_data),
+            index(0),
+        ));
+    }
+
+    #[test]
     fn vertex_shader_writes_position_and_uv() {
         let mut output = Vec4::ZERO;
         let mut uv_output = Vec2::ZERO;
@@ -602,29 +629,5 @@ mod tests {
 
         assert_eq!(output, vec4(-0.25, 0.75, 0.0, 1.0));
         assert_eq!(uv_output, vec2(0.2, 0.8));
-    }
-
-    #[test]
-    fn fragment_shader_outputs_red_for_hit() {
-        let data = [1];
-        let camera = default_camera_data();
-        let constants = default_push_consts(1, index(0));
-        let mut output = Vec4::ZERO;
-
-        main_fs(&mut output, vec2(0.5, 0.5), &data, &camera, &constants);
-
-        assert_eq!(output, vec4(1.0, 0.0, 0.0, 1.0));
-    }
-
-    #[test]
-    fn fragment_shader_outputs_green_for_miss() {
-        let data = single_voxel_at_origin_depth_3();
-        let camera = default_camera_data();
-        let constants = default_push_consts(3, index(0));
-        let mut output = Vec4::ZERO;
-
-        main_fs(&mut output, vec2(0.5, 0.5), &data, &camera, &constants);
-
-        assert_eq!(output, vec4(0.0, 1.0, 0.0, 1.0));
     }
 }

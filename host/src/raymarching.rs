@@ -510,6 +510,41 @@ mod tests {
             mapping[dag.to_index(&root)]
         ));
     }
+
+    #[test]
+    fn multi_branch_traversal_matches_serialized_traversal_after_reentry() {
+        let depth = 3;
+        let mut dag = Svodag::new(depth);
+        let mut root = None;
+
+        for position in [uvec3(6, 6, 3), uvec3(3, 7, 0), uvec3(1, 6, 0)] {
+            root = Some(dag.insert_mutate(root, position, depth));
+        }
+
+        let root = root.unwrap();
+        let (serialized, mapping) = dag.serialize();
+        let serialized_view = shader::SerializedSvodagView::from_slice(&serialized);
+        let serialized_root = mapping[dag.to_index(&root)];
+
+        for (origin, direction, expected) in [
+            (vec3(2.5, 1.8125, 1.0625), vec3(-1.0, 0.0, 0.0), true),
+            (vec3(0.5, 1.8125, 1.4375), vec3(1.0, 0.0, 0.0), true),
+            (vec3(0.5, 1.6875, 1.0625), vec3(1.0, 0.0, 0.0), false),
+        ] {
+            let cpu_result = raymarch(origin, direction, &dag, &root);
+            let serialized_result =
+                shader::raymarch(origin, direction, depth, serialized_view, serialized_root);
+
+            assert_eq!(cpu_result, expected, "unexpected CPU result for {origin}");
+            assert_eq!(
+                serialized_result, cpu_result,
+                "serialized traversal diverged for {origin}"
+            );
+        }
+
+        dag.release(root);
+    }
+
     use crate::svodag::Svodag;
     use glam::{uvec3, vec3, Vec3};
     use proptest::prelude::*;

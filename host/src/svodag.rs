@@ -742,28 +742,33 @@ mod tests {
     }
 
     #[test]
-    fn serialize_writes_child_masks_and_child_indices() {
-        let depth = 2;
-        let position = uvec3(3, 0, 1);
+    fn serialize_preserves_multi_level_child_order() {
+        let depth = 3;
         let mut dag = Svodag::new(depth);
-        let root = dag.insert_mutate(None, position, depth);
+        let mut root = None;
+
+        for position in [uvec3(6, 6, 3), uvec3(3, 7, 0), uvec3(1, 6, 0)] {
+            root = Some(dag.insert_mutate(root, position, depth));
+        }
 
         let (serialized, mapping) = dag.serialize();
         let view = SerializedSvodagView::from_slice(&serialized);
+        let root = root.unwrap();
         let root_index = mapping[dag.to_index(&root)];
-        let root_morton = morton_at(position, 0, depth) as u8;
 
-        assert!(!view.is_leaf(root_index));
-        assert_eq!(view.get_childmask(root_index), 1 << root_morton);
+        assert_eq!(view.get_childmask(root_index), 0b0100_0100);
 
-        let child_index = view.get_child(root_index, 0);
-        let child_morton = morton_at(position, 1, depth) as u8;
-        assert!(!view.is_leaf(child_index));
-        assert_eq!(view.get_childmask(child_index), 1 << child_morton);
+        let morton_6_branch = view.get_child(root_index, 0);
+        let morton_2_branch = view.get_child(root_index, 1);
 
-        let leaf_index = view.get_child(child_index, 0);
-        assert!(view.is_leaf(leaf_index));
-        assert_eq!(view.get_childmask(leaf_index), 0);
+        assert_eq!(view.get_childmask(morton_6_branch), 0b1000_0000);
+        assert_eq!(view.get_childmask(morton_2_branch), 0b0100_0100);
+
+        let nested_morton_6_branch = view.get_child(morton_2_branch, 0);
+        let nested_morton_2_branch = view.get_child(morton_2_branch, 1);
+
+        assert_eq!(view.get_childmask(nested_morton_6_branch), 0b0100_0000);
+        assert_eq!(view.get_childmask(nested_morton_2_branch), 0b0001_0000);
 
         dag.release(root);
     }
