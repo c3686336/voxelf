@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use egui_winit_vulkano::{egui, Gui, GuiConfig};
 use glam::{vec2, Vec2};
 use shader::SvoIndex;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::{
@@ -30,6 +31,7 @@ use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
 use vulkano::pipeline::{DynamicState, Pipeline};
 use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use vulkano::query::{QueryPool, QueryPoolCreateInfo, QueryResultFlags, QueryType};
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo};
 use vulkano::render_pass::{RenderPass, Subpass};
 use vulkano::shader::{ShaderModule, ShaderModuleCreateInfo};
@@ -37,13 +39,53 @@ use vulkano::swapchain::acquire_next_image;
 use vulkano::swapchain::SwapchainCreateInfo;
 use vulkano::swapchain::SwapchainPresentInfo;
 use vulkano::swapchain::{Surface, Swapchain};
-use vulkano::sync::{self, GpuFuture};
+use vulkano::sync::{GpuFuture, PipelineStage};
 use vulkano::Validated;
 use vulkano::VulkanError;
 use vulkano::VulkanLibrary;
 use winit::{event::WindowEvent, event_loop::EventLoop, window::Window};
 
 const CAMERA_BUFFER_COUNT: usize = 3;
+const GPU_TIMING_SAMPLE_COUNT: usize = 240;
+
+#[derive(Default)]
+struct GpuTimingStats {
+    samples_ms: VecDeque<f64>,
+}
+
+#[derive(Clone, Copy)]
+struct GpuTimingSummary {
+    latest_ms: f64,
+    mean_ms: f64,
+    p50_ms: f64,
+    p95_ms: f64,
+    max_ms: f64,
+}
+
+impl GpuTimingStats {
+    fn record(&mut self, elapsed_ms: f64) {
+        if self.samples_ms.len() == GPU_TIMING_SAMPLE_COUNT {
+            self.samples_ms.pop_front();
+        }
+        self.samples_ms.push_back(elapsed_ms);
+    }
+
+    fn summary(&self) -> Option<GpuTimingSummary> {
+        let latest_ms = *self.samples_ms.back()?;
+        let mean_ms = self.samples_ms.iter().sum::<f64>() / self.samples_ms.len() as f64;
+        let mut sorted = self.samples_ms.iter().copied().collect::<Vec<_>>();
+        sorted.sort_by(f64::total_cmp);
+        let percentile = |percent: usize| sorted[(sorted.len() - 1) * percent / 100];
+
+        Some(GpuTimingSummary {
+            latest_ms,
+            mean_ms,
+            p50_ms: percentile(50),
+            p95_ms: percentile(95),
+            max_ms: *sorted.last().unwrap(),
+        })
+    }
+}
 
 #[derive(BufferContents, Vertex)]
 #[repr(C)]
@@ -65,6 +107,7 @@ pub struct Vulkan {
     svodag_depth: u32,
     svodag_metadata_buffer: Subbuffer<[shader::SvodagMetaData]>,
     rcx: Option<RenderContext>,
+    timestamp_query_pool: Arc<QueryPool>,
 }
 
 struct RenderContext {
@@ -76,9 +119,9 @@ struct RenderContext {
     viewport: Viewport,
     gui: Gui,
     recreate_swapchain: bool,
-    previous_frame_end: Option<Box<dyn GpuFuture>>,
     descriptor_sets: Vec<Arc<DescriptorSet>>,
     camera_buffer_index: usize,
+    gpu_timing: GpuTimingStats,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -297,6 +340,14 @@ impl Vulkan {
 
         let rcx = None;
 
+        let timestamp_query_pool = QueryPool::new(
+            device.clone(),
+            QueryPoolCreateInfo {
+                query_count: 2,
+                ..QueryPoolCreateInfo::query_type(QueryType::Timestamp)
+            },
+        )?;
+
         Ok(Vulkan {
             instance,
             device,
@@ -308,6 +359,7 @@ impl Vulkan {
             svodag_depth,
             svodag_metadata_buffer,
             rcx,
+            timestamp_query_pool,
         })
     }
 
@@ -472,8 +524,6 @@ impl Vulkan {
 
         let recreate_swapchain = false;
 
-        let previous_frame_end = Some(sync::now(self.device.clone()).boxed());
-
         self.rcx = Some(RenderContext {
             window,
             swapchain,
@@ -483,9 +533,9 @@ impl Vulkan {
             viewport,
             gui,
             recreate_swapchain,
-            previous_frame_end,
             descriptor_sets,
             camera_buffer_index: 0,
+            gpu_timing: GpuTimingStats::default(),
         });
 
         Ok(())
@@ -521,11 +571,6 @@ impl Vulkan {
             return Ok(());
         }
 
-        rcx.previous_frame_end
-            .as_mut()
-            .context("What?")?
-            .cleanup_finished();
-
         let aspect_ratio = window_size.width as f32 / window_size.height as f32;
         let Some(descriptor_set_index) = write_camera_buffer(
             &self.camera_buffers,
@@ -549,6 +594,7 @@ impl Vulkan {
             rcx.recreate_swapchain = false;
         }
 
+        let gpu_timing = rcx.gpu_timing.summary();
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
             egui::Window::new("Voxelf")
@@ -562,6 +608,17 @@ impl Vulkan {
                         camera.origin[0], camera.origin[1], camera.origin[2]
                     ));
                     ui.label(format!("FPS: {:.0}", fps));
+                    if let Some(timing) = gpu_timing {
+                        ui.label(format!("GPU draw: {:.2} ms", timing.latest_ms));
+                        ui.label(format!(
+                            "Mean/P50/P95/Max: {:.2}/{:.2}/{:.2}/{:.2} ms",
+                            timing.mean_ms, timing.p50_ms, timing.p95_ms, timing.max_ms
+                        ));
+                        ui.label(format!(
+                            "GPU-only capacity: {:.0} FPS",
+                            1000.0 / timing.mean_ms
+                        ));
+                    }
                     ui.separator();
                     ui.label("W/A/S/D move, Q/E rise/drop, left mouse drag looks around.");
                     ui.label("egui overlay boilerplate is wired into the Vulkan render pass.");
@@ -587,6 +644,10 @@ impl Vulkan {
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )?;
+
+        unsafe {
+            builder.reset_query_pool(self.timestamp_query_pool.clone(), 0..2)?;
+        }
 
         builder
             .begin_render_pass(
@@ -616,7 +677,21 @@ impl Vulkan {
                 shader::PushConsts::new(self.svodag_depth, root_indices[0]),
             )?;
 
+        unsafe {
+            builder.write_timestamp(
+                self.timestamp_query_pool.clone(),
+                0,
+                PipelineStage::TopOfPipe,
+            )?;
+        }
         unsafe { builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }?;
+        unsafe {
+            builder.write_timestamp(
+                self.timestamp_query_pool.clone(),
+                1,
+                PipelineStage::BottomOfPipe,
+            )?;
+        }
 
         builder.next_subpass(
             Default::default(),
@@ -635,11 +710,7 @@ impl Vulkan {
 
         let command_buffer = builder.build()?;
 
-        let future = rcx
-            .previous_frame_end
-            .take()
-            .context("")?
-            .join(acquire_future)
+        let future = acquire_future
             .then_execute(self.queue.clone(), command_buffer)?
             .then_swapchain_present(
                 self.queue.clone(),
@@ -647,16 +718,37 @@ impl Vulkan {
             )
             .then_signal_fence_and_flush();
 
-        match future.map_err(Validated::unwrap) {
-            Ok(future) => {
-                rcx.previous_frame_end = Some(future.boxed());
-            }
+        let future = match future.map_err(Validated::unwrap) {
+            Ok(future) => future,
             Err(VulkanError::OutOfDate) => {
                 rcx.recreate_swapchain = true;
-                rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed())
+                return Ok(());
             }
             Err(e) => return Err(anyhow!(e)),
-        }
+        };
+
+        future.wait(None)?;
+
+        let mut timestamps = [0u64; 2];
+        let available = self.timestamp_query_pool.get_results(
+            0..2,
+            &mut timestamps,
+            QueryResultFlags::empty(),
+        )?;
+
+        assert!(available);
+
+        let period_ns = self.device.physical_device().properties().timestamp_period;
+        let elapsed_ticks = timestamps[1].wrapping_sub(timestamps[0]);
+        let queue_family = &self.device.physical_device().queue_family_properties()
+            [self.queue.queue_family_index() as usize];
+        let elapsed_ticks = match queue_family.timestamp_valid_bits {
+            Some(valid_bits) if valid_bits < 64 => elapsed_ticks & ((1_u64 << valid_bits) - 1),
+            _ => elapsed_ticks,
+        };
+        let elapsed_ms = elapsed_ticks as f64 * period_ns as f64 / 1_000_000.0;
+
+        rcx.gpu_timing.record(elapsed_ms);
 
         Ok(())
     }
