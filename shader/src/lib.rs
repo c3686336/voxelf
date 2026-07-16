@@ -6,6 +6,8 @@ extern crate spirv_std;
 extern crate std;
 
 use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
+use spirv_std::image::{Image2d, SampledImage};
+#[allow(unused_imports)]
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
@@ -301,7 +303,8 @@ pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] camera: &[CameraData],
+    #[spirv(descriptor_set = 0, binding = 1)] environment: &SampledImage<Image2d>,
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] camera: &[CameraData],
     #[spirv(push_constant)] constants: &PushConsts,
 ) {
     let svodag = SerializedSvodagView::from_slice(buffer);
@@ -320,10 +323,11 @@ pub fn main_fs(
     let film_point: Vec3 = camera_direction * film_distance
         + x.x * camera_right * film_width
         + x.y * camera_up * film_height;
+    let ray_direction = film_point.normalize();
 
     let result = raymarch(
         camera_origin,
-        film_point.normalize(),
+        ray_direction,
         constants.max_depth,
         svodag,
         constants.root_index,
@@ -332,7 +336,13 @@ pub fn main_fs(
     if result {
         *output = vec4(1.0, 0.0, 0.0, 1.0);
     } else {
-        *output = vec4(0.0, 1.0, 0.0, 1.0);
+        let environment_uv = vec2(
+            0.5 + ray_direction.z.atan2(ray_direction.x) / core::f32::consts::TAU,
+            0.5 - ray_direction.y.asin() / core::f32::consts::PI,
+        );
+        let radiance = vec4_to_vec3(environment.sample(environment_uv)).max(Vec3::ZERO);
+        let mapped = radiance / (radiance + Vec3::ONE);
+        *output = vec4(mapped.x, mapped.y, mapped.z, 1.0);
     }
 }
 

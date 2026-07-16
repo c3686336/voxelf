@@ -1,0 +1,18 @@
+* Running
+
+Run with the supplied =res/envmap.hdr= environment:
+
+#+begin_src sh
+cargo run --release
+#+end_src
+
+Override it by passing another Radiance HDR equirectangular environment map as
+the first argument:
+
+#+begin_src sh
+cargo run --release -- path/to/environment.hdr
+#+end_src
+
+The image is decoded as linear floating-point radiance, uploaded as RGBA16F
+without tone mapping, and sampled for fragment-shader misses. The current
+display applies a simple Reinhard tone map.

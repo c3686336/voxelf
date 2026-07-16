@@ -14,8 +14,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{self, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-const SHADER: &[u8] = include_bytes!(env!("shader.spv"));
-
 struct Object {
     root: SvoNodeRef,
     transform: Mat4,
@@ -191,12 +189,15 @@ struct App {
 }
 
 impl App {
-    pub fn new(event_loop: &EventLoop<()>) -> anyhow::Result<Self> {
+    pub fn new(
+        event_loop: &EventLoop<()>,
+        environment_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<Self> {
         let (svodag, root) = svodag::get_example_svodag(7);
         let (serialized, index_mapping) = svodag.serialize();
 
         Ok(Self {
-            vulkan: Vulkan::new(event_loop, serialized.as_ref(), 7)?,
+            vulkan: Vulkan::new(event_loop, serialized.as_ref(), 7, environment_path)?,
             svodag,
             index_mapping,
             objects: vec![Object {
@@ -257,11 +258,13 @@ impl ApplicationHandler for App {
 
 fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
-    // let mut app = vulkan::App::new(&event_loop)?;
-
-    // Ok(event_loop.run_app(&mut app)?)
-
-    let mut app = App::new(&event_loop)?;
+    let environment_path = std::env::args_os()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../res/envmap.hdr")
+        });
+    let mut app = App::new(&event_loop, Some(&environment_path))?;
 
     Ok(event_loop.run_app(&mut app)?)
 }
