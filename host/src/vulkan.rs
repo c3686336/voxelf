@@ -102,7 +102,7 @@ pub struct Vulkan {
     queue: Arc<Queue>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     vertex_buffer: Subbuffer<[MyVertex]>,
-    svodag_buffer: Subbuffer<[u16]>,
+    svodag_buffer: Subbuffer<[u32]>,
     camera_buffers: Vec<Subbuffer<[CameraBuffer]>>,
     svodag_depth: u32,
     svodag_metadata_buffer: Subbuffer<[shader::SvodagMetaData]>,
@@ -189,7 +189,7 @@ fn write_camera_buffer(
 impl Vulkan {
     pub fn new(
         event_loop: &EventLoop<()>,
-        serialized_svodag: &[u16],
+        serialized_svodag: &[u32],
         svodag_depth: u32,
     ) -> anyhow::Result<Self> {
         let library = VulkanLibrary::new()?;
@@ -211,10 +211,8 @@ impl Vulkan {
 
         let device_features = DeviceFeatures {
             vulkan_memory_model: true,
-            shader_int16: true,
             shader_int8: true,
             storage_buffer8_bit_access: true,
-            storage_buffer16_bit_access: true,
             ..DeviceFeatures::empty()
         };
 

@@ -16,7 +16,6 @@ const STACK_DEPTH: usize = 8;
 pub struct PushConsts {
     pub max_depth: u32,
     pub root_index: SvoIndex,
-    pad: u16,
 }
 
 impl PushConsts {
@@ -24,7 +23,6 @@ impl PushConsts {
         Self {
             max_depth,
             root_index,
-            pad: 0,
         }
     }
 }
@@ -59,7 +57,7 @@ fn vec4_to_vec3(value: Vec4) -> Vec3 {
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct SvodagMetaData {
     pub root_index: SvoIndex,
-    pad: u16,
+    pad: [u32; 3],
     pub inv_model_transform: Mat4,
 }
 
@@ -67,7 +65,7 @@ impl SvodagMetaData {
     pub fn new(root_index: SvoIndex, inv_model_transform: Mat4) -> Self {
         Self {
             root_index,
-            pad: 0,
+            pad: [0; 3],
             inv_model_transform,
         }
     }
@@ -75,14 +73,14 @@ impl SvodagMetaData {
 
 #[derive(Clone, Copy, PartialEq, Eq, bytemuck::AnyBitPattern)]
 #[repr(C)]
-pub struct SvoIndex(u16);
+pub struct SvoIndex(u32);
 
 impl SvoIndex {
-    pub unsafe fn from_raw(index: u16) -> Self {
+    pub unsafe fn from_raw(index: u32) -> Self {
         Self(index)
     }
 
-    pub fn to_raw(&self) -> u16 {
+    pub fn to_raw(&self) -> u32 {
         self.0
     }
 }
@@ -90,7 +88,7 @@ impl SvoIndex {
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct SerializedSvodagView<'a> {
-    data: &'a [u16],
+    data: &'a [u32],
 }
 
 impl<'a> SerializedSvodagView<'a> {
@@ -108,11 +106,11 @@ impl<'a> SerializedSvodagView<'a> {
         }
     }
 
-    pub fn get_data(&self) -> &[u16] {
+    pub fn get_data(&self) -> &[u32] {
         &self.data
     }
 
-    pub fn from_slice(slice: &'a [u16]) -> Self {
+    pub fn from_slice(slice: &'a [u32]) -> Self {
         Self { data: slice }
     }
 }
@@ -302,7 +300,7 @@ pub fn main_vs(
 pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u16],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] camera: &[CameraData],
     #[spirv(push_constant)] constants: &PushConsts,
 ) {
@@ -343,7 +341,7 @@ mod tests {
     use super::*;
     use std::vec::Vec;
 
-    fn index(raw: u16) -> SvoIndex {
+    fn index(raw: u32) -> SvoIndex {
         unsafe { SvoIndex::from_raw(raw) }
     }
 
@@ -360,7 +358,7 @@ mod tests {
         )]
     }
 
-    fn single_voxel_at_origin_depth_3() -> [u16; 7] {
+    fn single_voxel_at_origin_depth_3() -> [u32; 7] {
         [0x0100, 2, 0x0100, 4, 0x0100, 6, 1]
     }
 
@@ -373,13 +371,13 @@ mod tests {
         ((x << 2) | (y << 1) | z) as u8
     }
 
-    fn single_voxel(position: [u32; 3], depth: u32) -> Vec<u16> {
+    fn single_voxel(position: [u32; 3], depth: u32) -> Vec<u32> {
         let mut data = Vec::new();
 
         for level in 0..depth {
-            let child_mask = 1_u16 << morton_at(position, level, depth);
+            let child_mask = 1_u32 << morton_at(position, level, depth);
             data.push(child_mask << 8);
-            data.push(data.len() as u16 + 1);
+            data.push(data.len() as u32 + 1);
         }
 
         data.push(1);
@@ -388,12 +386,14 @@ mod tests {
 
     #[test]
     fn constructors_initialize_fields_and_padding() {
-        let root_index = index(17);
+        let root_index = index(70_000);
         let push_consts = default_push_consts(5, root_index);
 
+        assert_eq!(core::mem::size_of::<SvoIndex>(), 4);
+        assert_eq!(core::mem::size_of::<PushConsts>(), 8);
+        assert_eq!(core::mem::size_of::<SvodagMetaData>(), 80);
         assert_eq!(push_consts.max_depth, 5);
-        assert_eq!(push_consts.root_index.to_raw(), 17);
-        assert_eq!(push_consts.pad, 0);
+        assert_eq!(push_consts.root_index.to_raw(), 70_000);
 
         let camera = default_camera_data()[0];
         assert_eq!(camera.origin, vec4(1.5, 1.5, 3.0, 0.0));
@@ -403,8 +403,8 @@ mod tests {
         assert_eq!(camera.viewport, vec4(1.0, 0.0, 0.0, 0.0));
 
         let metadata = SvodagMetaData::new(root_index, Mat4::IDENTITY);
-        assert_eq!(metadata.root_index.to_raw(), 17);
-        assert_eq!(metadata.pad, 0);
+        assert_eq!(metadata.root_index.to_raw(), 70_000);
+        assert_eq!(metadata.pad, [0; 3]);
         assert_eq!(metadata.inv_model_transform, Mat4::IDENTITY);
     }
 

@@ -5,7 +5,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.build_script.defaults = true;
     builder.spirv_metadata = SpirvMetadata::Full;
     builder.build_script.env_shader_spv_path = Some(true);
-    builder.capabilities.push(spirv_builder::Capability::Int16);
     builder.capabilities.push(spirv_builder::Capability::Int8);
     builder.build()?;
 

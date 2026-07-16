@@ -429,21 +429,25 @@ impl Svodag {
         self.nodes.len()
     }
 
-    pub fn serialize(&self) -> (Vec<u16>, Vec<SvoIndex>) {
+    pub fn serialize(&self) -> (Vec<u32>, Vec<SvoIndex>) {
         let mut actual_indices: Vec<SvoIndex> = Vec::new();
-        let mut result: Vec<u16> = Vec::new();
+        let mut result: Vec<u32> = Vec::new();
 
         for node in &self.nodes {
-            actual_indices.push(unsafe { SvoIndex::from_raw(result.len() as u16) });
-            result.push((node.child_mask as u16) << 8 | (node.leaf as u16));
+            let serialized_index =
+                u32::try_from(result.len()).expect("serialized SVoDAG exceeds u32 index space");
+            actual_indices.push(unsafe { SvoIndex::from_raw(serialized_index) });
+            result.push((node.child_mask as u32) << 8 | node.leaf as u32);
 
             for child in &node.children {
-                result.push(self.indices[child.0] as u16);
+                let child_index = u32::try_from(self.indices[child.0])
+                    .expect("SVoDAG node count exceeds u32 index space");
+                result.push(child_index);
             }
         }
 
         let mut index = 0;
-        for (i, node) in self.nodes.iter().enumerate() {
+        for node in &self.nodes {
             index += 1;
             for _ in &node.children {
                 result[index] = actual_indices[result[index as usize] as usize].to_raw();
@@ -819,12 +823,14 @@ mod tests {
     }
 
     #[test]
-    fn example_svodag_is_complex_and_fits_serialized_index_space() {
+    fn example_svodag_is_complex_and_serializes_valid_indices() {
         let (mut dag, root) = get_example_svodag(7);
 
         assert!(dag.len() > 1_000);
-        let (serialized, _) = dag.serialize();
-        assert!(serialized.len() <= u16::MAX as usize);
+        let (serialized, mapping) = dag.serialize();
+        assert!(mapping
+            .iter()
+            .all(|index| (index.to_raw() as usize) < serialized.len()));
 
         dag.release(root);
     }
