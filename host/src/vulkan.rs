@@ -712,6 +712,7 @@ impl Vulkan {
 
         let future = acquire_future
             .then_execute(self.queue.clone(), command_buffer)?
+            .then_signal_semaphore()
             .then_swapchain_present(
                 self.queue.clone(),
                 SwapchainPresentInfo::swapchain_image_index(rcx.swapchain.clone(), image_index),
