@@ -1,4 +1,4 @@
-use glam::{uvec3, UVec3};
+use glam::{uvec3, vec2, vec3, UVec3, Vec3};
 use shader::{SerializedSvodagView, SvoIndex};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -479,6 +479,35 @@ impl fmt::Display for Svodag {
     }
 }
 
+fn is_example_voxel(position: UVec3, width: u32) -> bool {
+    let voxel_size = 2.0 / width as f32;
+    let point = (position.as_vec3() + Vec3::splat(0.5)) * voxel_size - Vec3::ONE;
+    let shell_thickness = voxel_size * 1.25;
+
+    let sphere = point - vec3(-0.34, -0.02, 0.02);
+    let sphere_cage = (sphere.length() - 0.43).abs() <= shell_thickness
+        && (sphere.x.abs() <= 0.1 || sphere.y.abs() <= 0.1 || sphere.z.abs() <= 0.1);
+
+    let torus = point - vec3(0.34, -0.02, 0.04);
+    let torus_ring = vec2(torus.x, torus.y).length() - 0.3;
+    let torus_shell = (vec2(torus_ring, torus.z).length() - 0.1).abs() <= shell_thickness;
+
+    let tile_size = (width / 16).max(1);
+    let checker = (position.x / tile_size + position.z / tile_size) % 2 == 0;
+    let platform_bounds = point.x.abs() <= 0.92 && point.z.abs() <= 0.72;
+    let platform_border = point.x.abs() >= 0.82 || point.z.abs() >= 0.62;
+    let platform = point.y >= -0.72
+        && point.y < -0.72 + voxel_size
+        && platform_bounds
+        && (checker || platform_border);
+
+    let left_support = vec2(point.x + 0.34, point.z - 0.02).length() <= 0.045;
+    let right_support = vec2(point.x - 0.34, point.z - 0.04).length() <= 0.045;
+    let support_height = point.y >= -0.72 && point.y <= -0.43;
+
+    sphere_cage || torus_shell || platform || (support_height && (left_support || right_support))
+}
+
 pub fn get_example_svodag(depth: u32) -> (Svodag, SvoNodeRef) {
     let width = 1 << depth;
     let mut dag = Svodag::new(depth);
@@ -487,7 +516,7 @@ pub fn get_example_svodag(depth: u32) -> (Svodag, SvoNodeRef) {
     for i in 0..width {
         for j in 0..width {
             for k in 0..width {
-                if (i | j | k) == i + j + k {
+                if is_example_voxel(uvec3(i, j, k), width) {
                     root = Some(dag.insert_mutate(root, uvec3(i, j, k), depth));
                 }
             }
@@ -774,29 +803,28 @@ mod tests {
     }
 
     #[test]
-    fn example_svodag_contains_expected_depth_one_pattern() {
-        let (mut dag, root) = get_example_svodag(1);
+    fn example_svodag_contains_each_procedural_feature() {
+        let depth = 5;
+        let (mut dag, root) = get_example_svodag(depth);
 
-        assert_eq!(
-            dag.get(&root, uvec3(0, 0, 0)),
-            SvodagQueryResult::Some { depth: 1 }
-        );
-        assert_eq!(
-            dag.get(&root, uvec3(1, 0, 0)),
-            SvodagQueryResult::Some { depth: 1 }
-        );
-        assert_eq!(
-            dag.get(&root, uvec3(0, 1, 0)),
-            SvodagQueryResult::Some { depth: 1 }
-        );
-        assert_eq!(
-            dag.get(&root, uvec3(0, 0, 1)),
-            SvodagQueryResult::Some { depth: 1 }
-        );
-        assert!(dag.get(&root, uvec3(1, 1, 0)).is_none());
-        assert!(dag.get(&root, uvec3(1, 0, 1)).is_none());
-        assert!(dag.get(&root, uvec3(0, 1, 1)).is_none());
-        assert!(dag.get(&root, uvec3(1, 1, 1)).is_none());
+        for position in [uvec3(16, 4, 16), uvec3(3, 15, 15), uvec3(27, 15, 16)] {
+            assert!(
+                dag.get(&root, position).is_some(),
+                "expected occupied voxel at {position}"
+            );
+        }
+        assert!(dag.get(&root, uvec3(31, 31, 31)).is_none());
+
+        dag.release(root);
+    }
+
+    #[test]
+    fn example_svodag_is_complex_and_fits_serialized_index_space() {
+        let (mut dag, root) = get_example_svodag(7);
+
+        assert!(dag.len() > 1_000);
+        let (serialized, _) = dag.serialize();
+        assert!(serialized.len() <= u16::MAX as usize);
 
         dag.release(root);
     }
