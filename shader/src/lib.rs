@@ -9,7 +9,7 @@ use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
-const STACK_DEPTH: usize = 20;
+const STACK_DEPTH: usize = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
@@ -194,6 +194,9 @@ pub fn raymarch(
                 return true;
             }
 
+            if stack_ind >= STACK_DEPTH {
+                return false;
+            }
             stack[stack_ind] = parent;
             stack_ind += 1;
 
@@ -263,11 +266,16 @@ pub fn raymarch(
             let y = position.y.to_bits();
             let z = position.z.to_bits();
 
+            if depth == 0 || depth > 23 || depth as usize > STACK_DEPTH {
+                return false;
+            }
+
             idx = ((((x >> (23 - depth)) & 1) << 2)
                 | (((y >> (23 - depth)) & 1) << 1)
                 | (((z >> (23 - depth)) & 1) << 0)) as u8;
-            parent = stack[(depth - 1) as usize];
-            stack_ind = depth as usize;
+            let stack_index = (depth - 1) as usize;
+            parent = stack[stack_index];
+            stack_ind = stack_index;
             // TODO: Instead of popping an item which will be pushed back again anyway, just set a flag.
 
             position.x = f32::from_bits(x >> (23 - depth) << (23 - depth));
