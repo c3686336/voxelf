@@ -15,6 +15,7 @@ use std::ops::Range;
 use std::path::Path;
 use surface::SurfaceState;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
+use vulkano::format::NumericFormat;
 use vulkano::query::QueryResultFlags;
 use vulkano::swapchain::{acquire_next_image, SwapchainPresentInfo};
 use vulkano::sync::GpuFuture;
@@ -23,6 +24,30 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 
 pub use frame::CameraView;
+struct Material {
+    albedo_srgb: [u8; 3],
+    metallic: f32,
+    roughness: f32,
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            albedo_srgb: [255, 0, 0],
+            metallic: 0.0,
+            roughness: 0.5,
+        }
+    }
+}
+
+impl Material {
+    fn linear_albedo(&self) -> [f32; 3] {
+        let [r, g, b] = self.albedo_srgb;
+        let color = egui::Rgba::from(egui::Color32::from_rgb(r, g, b));
+        let [r, g, b, _] = color.to_array();
+        [r, g, b]
+    }
+}
 
 pub struct Vulkan {
     context: GpuContext,
@@ -31,6 +56,7 @@ pub struct Vulkan {
     surface: Option<SurfaceState>,
     raymarch_pass: Option<RaymarchPass>,
     svodag_depth: u32,
+    material: Material,
 }
 
 impl Vulkan {
@@ -51,6 +77,7 @@ impl Vulkan {
             surface: None,
             raymarch_pass: None,
             svodag_depth,
+            material: Material::default(),
         })
     }
 
@@ -194,6 +221,14 @@ impl Vulkan {
                         ));
                     }
                     ui.separator();
+                    ui.heading("Material");
+                    ui.horizontal(|ui| {
+                        ui.label("Albedo");
+                        ui.color_edit_button_srgb(&mut self.material.albedo_srgb);
+                    });
+                    ui.add(egui::Slider::new(&mut self.material.metallic, 0.0..=1.0).text("Metallic"));
+                    ui.add(egui::Slider::new(&mut self.material.roughness, 0.0..=1.0).text("Roughness"));
+                    ui.separator();
                     ui.label("W/A/S/D move, Q/E rise/drop, left mouse drag looks around. Z removes / X adds voxel at view center.");
                 });
         });
@@ -224,8 +259,15 @@ impl Vulkan {
             surface.framebuffers[image_index as usize].clone(),
             surface.viewport.clone(),
             camera_buffer_index,
-            root_index,
-            self.svodag_depth,
+            shader::PushConsts::new(
+                self.svodag_depth,
+                root_index,
+                self.material.linear_albedo(),
+                self.material.metallic,
+                self.material.roughness,
+                surface.swapchain.image_format().numeric_format_color()
+                    != Some(NumericFormat::SRGB),
+            ),
             self.frames.timestamp_query_pool.clone(),
         )?;
         let gui_command_buffer = surface
@@ -294,7 +336,19 @@ fn grown_capacity(current: usize, required: usize, max: usize) -> Result<usize> 
 
 #[cfg(test)]
 mod tests {
-    use super::grown_capacity;
+    use super::{grown_capacity, Material};
+
+    #[test]
+    fn material_albedo_is_converted_from_srgb_to_linear() {
+        let material = Material {
+            albedo_srgb: [0, 128, 255],
+            ..Material::default()
+        };
+        let linear = material.linear_albedo();
+        assert_eq!(linear[0], 0.0);
+        assert!((linear[1] - 0.215_86).abs() < 0.000_1);
+        assert_eq!(linear[2], 1.0);
+    }
 
     #[test]
     fn buffer_capacity_grows_geometrically_and_respects_limits() {

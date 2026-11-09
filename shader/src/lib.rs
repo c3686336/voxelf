@@ -21,13 +21,33 @@ const STACK_DEPTH: usize = 8;
 pub struct PushConsts {
     pub max_depth: u32,
     pub root_index: SvoIndex,
+    pub albedo_r: f32,
+    pub albedo_g: f32,
+    pub albedo_b: f32,
+    pub metallic: f32,
+    pub roughness: f32,
+    /// Nonzero when the attachment does not perform sRGB encoding.
+    pub encode_srgb: u32,
 }
 
 impl PushConsts {
-    pub fn new(max_depth: u32, root_index: SvoIndex) -> Self {
+    pub fn new(
+        max_depth: u32,
+        root_index: SvoIndex,
+        albedo: [f32; 3],
+        metallic: f32,
+        roughness: f32,
+        encode_srgb: bool,
+    ) -> Self {
         Self {
             max_depth,
             root_index,
+            albedo_r: albedo[0],
+            albedo_g: albedo[1],
+            albedo_b: albedo[2],
+            metallic,
+            roughness,
+            encode_srgb: encode_srgb as u32,
         }
     }
 }
@@ -300,6 +320,14 @@ pub fn main_vs(
     *uv_output = uv;
 }
 
+fn linear_to_srgb(value: f32) -> f32 {
+    if value <= 0.003_130_8 {
+        12.92 * value
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 #[spirv(fragment)]
 pub fn main_fs(
     output: &mut Vec4,
@@ -336,7 +364,17 @@ pub fn main_fs(
     );
 
     if result {
-        *output = vec4(1.0, 0.0, 0.0, 1.0);
+        let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
+        let color = if constants.encode_srgb != 0 {
+            vec3(
+                linear_to_srgb(albedo.x),
+                linear_to_srgb(albedo.y),
+                linear_to_srgb(albedo.z),
+            )
+        } else {
+            albedo
+        };
+        *output = vec4(color.x, color.y, color.z, 1.0);
     } else {
         let environment_uv = vec2(
             0.5 + ray_direction.z.atan2(ray_direction.x) / core::f32::consts::TAU,
@@ -353,12 +391,20 @@ mod tests {
     use super::*;
     use std::vec::Vec;
 
+    #[test]
+    fn srgb_encoding_matches_reference_values() {
+        assert_eq!(linear_to_srgb(0.0), 0.0);
+        assert!((linear_to_srgb(0.003_130_8) - 0.040_449_936).abs() < 0.000_001);
+        assert!((linear_to_srgb(0.215_86) - 0.501_96).abs() < 0.000_1);
+        assert!((linear_to_srgb(1.0) - 1.0).abs() < 0.000_001);
+    }
+
     fn index(raw: u32) -> SvoIndex {
         unsafe { SvoIndex::from_raw(raw) }
     }
 
     fn default_push_consts(max_depth: u32, root_index: SvoIndex) -> PushConsts {
-        PushConsts::new(max_depth, root_index)
+        PushConsts::new(max_depth, root_index, [1.0, 0.0, 0.0], 0.0, 0.5, false)
     }
 
     fn default_camera_data() -> [CameraData; 1] {
@@ -402,7 +448,11 @@ mod tests {
         let push_consts = default_push_consts(5, root_index);
 
         assert_eq!(core::mem::size_of::<SvoIndex>(), 4);
-        assert_eq!(core::mem::size_of::<PushConsts>(), 8);
+        assert_eq!(core::mem::size_of::<PushConsts>(), 32);
+        assert_eq!(core::mem::offset_of!(PushConsts, albedo_r), 8);
+        assert_eq!(core::mem::offset_of!(PushConsts, metallic), 20);
+        assert_eq!(core::mem::offset_of!(PushConsts, roughness), 24);
+        assert_eq!(core::mem::offset_of!(PushConsts, encode_srgb), 28);
         assert_eq!(core::mem::size_of::<SvodagMetaData>(), 80);
         assert_eq!(push_consts.max_depth, 5);
         assert_eq!(push_consts.root_index.to_raw(), 70_000);

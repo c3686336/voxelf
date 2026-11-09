@@ -17,6 +17,11 @@ The image is decoded as linear floating-point radiance, uploaded as RGBA16F
 without tone mapping, and sampled for fragment-shader misses. The current
 display applies a simple Reinhard tone map.
 
+The material controls set the scene's albedo, metallic and roughness values.
+Hits currently display albedo only; metallic and roughness are reserved for
+future lighting. The shared shader includes a metallic-roughness GGX BRDF, but
+the renderer does not evaluate it yet.
+
 * SVoDAG
 
 The host builds and edits the scene; host and shader use the same nine-word

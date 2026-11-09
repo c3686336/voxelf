@@ -3,7 +3,6 @@ use crate::vulkan::frame::FrameResources;
 use crate::vulkan::resources::SceneResources;
 use anyhow::{Context, Result};
 use glam::{vec2, Vec2};
-use shader::SvoIndex;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::{
@@ -199,8 +198,7 @@ impl RaymarchPass {
         framebuffer: Arc<Framebuffer>,
         viewport: Viewport,
         camera_buffer_index: usize,
-        root_index: SvoIndex,
-        max_depth: u32,
+        constants: shader::PushConsts,
         timestamp_query_pool: Arc<QueryPool>,
     ) -> Result<()> {
         builder
@@ -226,11 +224,7 @@ impl RaymarchPass {
                     self.frame_descriptor_sets[camera_buffer_index].clone(),
                 ),
             )?
-            .push_constants(
-                self.pipeline.layout().clone(),
-                0,
-                shader::PushConsts::new(max_depth, root_index),
-            )?;
+            .push_constants(self.pipeline.layout().clone(), 0, constants)?;
         unsafe {
             builder.write_timestamp(timestamp_query_pool.clone(), 0, PipelineStage::TopOfPipe)?;
             builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0)?;
