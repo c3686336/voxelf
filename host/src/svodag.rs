@@ -1,485 +1,139 @@
 use glam::{uvec3, vec2, vec3, UVec3, Vec3};
-use shader::{SerializedSvodagView, SvoIndex};
-use std::cell::RefCell;
+use shader::svodag::{self, PackedNode, SvodagStorage};
+use shader::{SvoIndex, SvodagView};
 use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Debug;
-use std::vec::Vec;
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
-#[must_use = "Please call Svodag.release to release the reference"]
-pub struct SvoNodeRef(pub usize);
+pub use shader::svodag::SvodagQueryResult;
+pub type SvoNodeRef = SvoIndex;
 
-impl fmt::Display for SvoNodeRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-fn morton_at(
-    position: UVec3,
-    level: u32, /*level 0 is root, level 1 is first child, etc*/
-    max_level: u32,
-) -> usize {
-    let shift_amount = max_level - level - 1;
-
-    let x = (position.x >> shift_amount) & 1;
-    let y = (position.y >> shift_amount) & 1;
-    let z = (position.z >> shift_amount) & 1;
-    ((x << 2) + (y << 1) + (z)) as usize
-}
-
-#[derive(Hash, Eq, PartialEq, Debug, Clone)]
-pub struct SvoNode {
-    pub child_mask: u8,
-    pub leaf: bool,
-    pub children: Vec<SvoNodeRef>,
-}
-
-impl fmt::Display for SvoNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "leaf: {} child_mask: 0b{:08b}",
-            self.leaf, self.child_mask
-        )?;
-
-        for i in 0..8 {
-            write!(f, "x: {} y: {} z: {} : ", i >> 2, (i >> 1) & 1, i & 1)?;
-            if (self.child_mask >> i) & 1 == 1 {
-                writeln!(f, "{}", self.children[self.index_of_morton(i)])?;
-            } else {
-                writeln!(f, "Empty")?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl SvoNode {
-    pub fn new() -> Self {
-        Self {
-            child_mask: 0,
-            leaf: true,
-            children: Vec::new(),
-        }
-    }
-
-    pub fn index_of(&self, position: UVec3, level: u32, max_level: u32) -> usize {
-        let morton = morton_at(position, level, max_level);
-
-        self.index_of_morton(morton)
-    }
-
-    pub fn index_of_morton(&self, morton: usize) -> usize {
-        ((self.child_mask >> morton).count_ones().max(1) - 1) as usize
-    }
-
-    pub fn child_at(&self, position: UVec3, level: u32, max_level: u32) -> Option<&SvoNodeRef> {
-        let morton = morton_at(position, level, max_level);
-        if (self.child_mask >> morton) & 1 == 1 {
-            Some(&self.children[self.index_of_morton(morton)])
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-pub enum SvodagQueryResult {
-    Some { depth: u32 },
-    None { depth: u32 },
-}
-
-impl SvodagQueryResult {
-    pub fn is_some(&self) -> bool {
-        matches!(self, SvodagQueryResult::Some { depth })
-    }
-
-    pub fn is_none(&self) -> bool {
-        matches!(self, SvodagQueryResult::None { depth })
-    }
-
-    pub fn depth(&self) -> u32 {
-        match self {
-            SvodagQueryResult::None { depth } => *depth,
-            SvodagQueryResult::Some { depth } => *depth,
-        }
-    }
-}
-
-impl fmt::Display for SvodagQueryResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
+/// Owns the same packed words read by the shader. Roots are explicit: callers
+/// must pass every root they intend to keep to `collect`.
 #[derive(Debug)]
 pub struct Svodag {
     pub depth: u32,
-    nodes: Vec<SvoNode>,
-    reference_counts: RefCell<Vec<u32>>,
-    indices: Vec<usize>,
-    free_indices: Vec<SvoNodeRef>,
-    hash_map: HashMap<SvoNode, SvoNodeRef>,
-    counter: usize,
+    data: Vec<u32>,
+    live: Vec<bool>,
+    free: Vec<usize>,
+    interned: HashMap<PackedNode, SvoIndex>,
+}
+
+impl SvodagStorage for Svodag {
+    fn view(&self) -> SvodagView<'_> {
+        SvodagView::from_slice(&self.data)
+    }
+
+    fn intern(&mut self, node: PackedNode) -> SvoIndex {
+        if let Some(&index) = self.interned.get(&node) {
+            return index;
+        }
+        let slot = if let Some(slot) = self.free.pop() {
+            self.live[slot] = true;
+            slot
+        } else {
+            let slot = self.live.len();
+            self.live.push(true);
+            self.data.extend_from_slice(&[0; 9]);
+            slot
+        };
+        let offset = slot
+            .checked_mul(9)
+            .and_then(|n| u32::try_from(n).ok())
+            .expect("SVoDAG exceeds u32 address space");
+        self.data[offset as usize..offset as usize + 9].copy_from_slice(&node.words);
+        let index = unsafe { SvoIndex::from_raw(offset) };
+        self.interned.insert(node, index);
+        index
+    }
 }
 
 impl Svodag {
     pub fn new(depth: u32) -> Self {
+        assert!(depth <= 32);
         Self {
             depth,
-            nodes: Vec::new(),
-            reference_counts: RefCell::new(Vec::new()),
-            indices: Vec::new(),
-            free_indices: Vec::new(),
-            hash_map: HashMap::new(),
-            counter: 0,
+            data: Vec::new(),
+            live: Vec::new(),
+            free: Vec::new(),
+            interned: HashMap::new(),
         }
     }
-
-    pub fn to_index(&self, node_ref: &SvoNodeRef) -> usize {
-        self.indices[node_ref.0]
+    pub fn view(&self) -> SvodagView<'_> {
+        <Self as SvodagStorage>::view(self)
     }
-
-    pub fn deref(&self, node_ref: &SvoNodeRef) -> &SvoNode {
-        &self.nodes[self.to_index(node_ref)]
+    pub fn data(&self) -> &[u32] {
+        &self.data
     }
-
-    fn deref_mut(&mut self, node_ref: &SvoNodeRef) -> &mut SvoNode {
-        let index = self.to_index(node_ref);
-        &mut self.nodes[index]
+    pub fn len(&self) -> usize {
+        self.interned.len()
     }
-
-    fn new_ref(&mut self) -> SvoNodeRef {
-        let result = self.free_indices.pop().unwrap_or_else(|| {
-            self.counter += 1;
-            self.indices.push(0);
-            SvoNodeRef(self.counter - 1)
-        });
-
-        self.indices[result.0] = self.nodes.len();
-
-        result
+    pub fn is_empty(&self) -> bool {
+        self.interned.is_empty()
     }
-
-    fn increase_refcount(&self, node: &SvoNodeRef) {
-        self.reference_counts.borrow_mut()[self.to_index(node)] += 1;
+    pub fn get(&self, root: &SvoNodeRef, position: UVec3) -> SvodagQueryResult {
+        self.view().get(*root, position, self.depth)
     }
-
-    fn acquire(&mut self, node: SvoNode) -> SvoNodeRef {
-        let result;
-        if let Some(value) = self.hash_map.get(&node) {
-            self.increase_refcount(value);
-            result = *value;
-        } else {
-            result = self.new_ref();
-            self.hash_map.insert(node.clone(), result);
-            self.reference_counts.borrow_mut().push(1);
-            self.nodes.push(node);
-        }
-
-        result
+    pub fn insert(&mut self, root: Option<&SvoNodeRef>, position: UVec3, depth: u32) -> SvoNodeRef {
+        assert_eq!(depth, self.depth);
+        svodag::edit(self, root.copied(), position, depth, true).unwrap()
     }
-
-    pub fn clone_node_ref(&self, node_ref: &SvoNodeRef) -> SvoNodeRef {
-        self.increase_refcount(node_ref);
-
-        *node_ref
-    }
-
-    pub fn release(&mut self, node_ref: SvoNodeRef) {
-        let a_index = self.to_index(&node_ref);
-        self.reference_counts.borrow_mut()[a_index] -= 1;
-
-        if self.reference_counts.borrow_mut()[a_index] == 0 {
-            self.free_indices.push(node_ref);
-            self.hash_map.remove(&self.deref(&node_ref).clone());
-            let b_index = self.reference_counts.borrow().len() - 1;
-            self.reference_counts.borrow_mut().swap(a_index, b_index);
-            self.reference_counts.borrow_mut().pop();
-            self.nodes.swap(a_index, b_index);
-            let mut node = self.nodes.pop().unwrap();
-
-            if a_index != b_index {
-                let b_ref = self.indices.iter().position(|&x| x == b_index).unwrap();
-                self.indices[node_ref.0] = usize::MAX;
-                self.indices[b_ref] = a_index;
-            } else {
-                self.indices[node_ref.0] = usize::MAX;
-            }
-
-            node.child_mask = 0;
-            let children = std::mem::take(&mut node.children);
-
-            for child in children {
-                self.release(child);
-            }
-        }
-    }
-
-    pub fn checkout(&self, node_ref: &SvoNodeRef) -> SvoNode {
-        let cloned = self.deref(node_ref).clone();
-
-        cloned
-    }
-
-    pub fn commit(&mut self, node: SvoNode) -> SvoNodeRef {
-        let result;
-        if let Some(value) = self.hash_map.get(&node) {
-            self.increase_refcount(value);
-            result = *value;
-        } else {
-            result = self.new_ref();
-            self.hash_map.insert(node.clone(), result);
-            for child in &node.children {
-                self.increase_refcount(child);
-            }
-            self.reference_counts.borrow_mut().push(1);
-            self.nodes.push(node);
-        }
-
-        result
-    }
-
-    fn insert_recursive(
-        &mut self,
-        node_ref_maybe: Option<&SvoNodeRef>,
-        position: UVec3,
-        level: u32,
-        max_level: u32,
-    ) -> SvoNodeRef {
-        if let Some(node_ref) = node_ref_maybe {
-            if level == max_level {
-                self.acquire(SvoNode::new())
-            } else {
-                let mut node = self.checkout(node_ref);
-
-                node.leaf = false;
-
-                let morton = morton_at(position, level, max_level);
-                let new_child = self.insert_recursive(
-                    node.child_at(position, level, max_level),
-                    position,
-                    level + 1,
-                    max_level,
-                );
-
-                if (node.child_mask >> morton) & 1 == 1 {
-                    let index = node.index_of_morton(morton);
-                    node.children[index] = new_child;
-                } else {
-                    node.children
-                        .insert((node.child_mask >> morton).count_ones() as usize, new_child);
-                    node.child_mask |= 1 << morton;
-                }
-
-                if node.child_mask == 0b11111111 && node.children.iter().all(|x| self.deref(x).leaf)
-                {
-                    node.child_mask = 0;
-                    node.children.clear();
-                    node.leaf = true;
-                }
-
-                let result = self.commit(node);
-                self.release(new_child);
-                result
-            }
-        } else {
-            if level == max_level {
-                self.acquire(SvoNode::new())
-            } else {
-                let mut node = SvoNode::new();
-                node.leaf = false;
-
-                let morton = morton_at(position, level, max_level);
-                node.child_mask = 1 << morton;
-                node.children
-                    .push(self.insert_recursive(None, position, level + 1, max_level));
-
-                self.acquire(node)
-            }
-        }
-    }
-
-    pub fn insert(&mut self, root: Option<&SvoNodeRef>, position: UVec3, level: u32) -> SvoNodeRef {
-        self.insert_recursive(root, position, 0, level)
-    }
-
     pub fn insert_mutate(
         &mut self,
         root: Option<SvoNodeRef>,
         position: UVec3,
-        level: u32,
+        depth: u32,
     ) -> SvoNodeRef {
-        let result = self.insert(root.as_ref(), position, level);
-        if let Some(root) = root {
-            self.release(root);
-        }
-
-        result
+        self.insert(root.as_ref(), position, depth)
     }
-
-    pub fn remove_mutate(
-        &mut self,
-        root: Option<SvoNodeRef>,
-        position: UVec3,
-        level: u32,
-    ) -> Option<SvoNodeRef> {
-        let result = self.remove(root.as_ref(), position, level);
-        if let Some(root) = root {
-            self.release(root);
-        }
-
-        result
-    }
-
     pub fn remove(
         &mut self,
         root: Option<&SvoNodeRef>,
         position: UVec3,
-        level: u32,
+        depth: u32,
     ) -> Option<SvoNodeRef> {
-        self.remove_recurse(root, position, 0, level)
+        assert_eq!(depth, self.depth);
+        svodag::edit(self, root.copied(), position, depth, false)
+    }
+    pub fn remove_mutate(
+        &mut self,
+        root: Option<SvoNodeRef>,
+        position: UVec3,
+        depth: u32,
+    ) -> Option<SvoNodeRef> {
+        self.remove(root.as_ref(), position, depth)
     }
 
-    fn remove_recurse(
-        &mut self,
-        node_root_maybe: Option<&SvoNodeRef>,
-        position: UVec3,
-        level: u32,
-        max_level: u32,
-    ) -> Option<SvoNodeRef> {
-        if let Some(node_ref) = node_root_maybe {
-            if level == max_level {
-                None
-            } else {
-                if self.deref(node_ref).leaf {
-                    let mut node = SvoNode::new();
-
-                    node.leaf = false;
-                    let morton = morton_at(position, level, max_level);
-
-                    let empty_leaf_node = self.acquire(SvoNode::new());
-                    for _ in 0..7 {
-                        node.children.push(empty_leaf_node);
-                    }
-                    let index = self.to_index(&empty_leaf_node);
-                    self.reference_counts.borrow_mut()[index] += 7;
-
-                    node.child_mask = 0b11111111 - (1 << morton);
-
-                    Some(self.acquire(node))
-                } else {
-                    let mut node = self.checkout(node_ref);
-                    let morton = morton_at(position, level, max_level);
-                    let child_maybe = node.child_at(position, level, max_level);
-
-                    if child_maybe.is_some() {
-                        let new_child_maybe =
-                            self.remove_recurse(child_maybe, position, level + 1, max_level);
-
-                        if let Some(new_child) = new_child_maybe {
-                            let index = node.index_of_morton(morton);
-                            node.children[index] = new_child;
-
-                            let result = self.commit(node);
-                            self.release(new_child);
-                            Some(result)
-                        } else {
-                            // SAFETY: We shouldn't do any memory management on checkout'd node
-                            let _ = node.children.remove(node.index_of_morton(morton));
-                            node.child_mask ^= 1 << morton;
-
-                            if node.child_mask == 0 {
-                                None
-                            } else {
-                                Some(self.commit(node))
-                            }
-                        }
-                    } else {
-                        Some(self.commit(node))
-                    }
+    /// Trace all supplied roots, reclaim unreachable slots, and remove their
+    /// entries from the intern table before any reclaimed slot can be reused.
+    pub fn collect(&mut self, roots: &[SvoNodeRef]) {
+        let mut marked = vec![false; self.live.len()];
+        let mut stack = roots.to_vec();
+        while let Some(index) = stack.pop() {
+            let offset = index.to_raw() as usize;
+            assert!(
+                offset % 9 == 0 && offset / 9 < self.live.len() && self.live[offset / 9],
+                "invalid DAG root or child"
+            );
+            let slot = offset / 9;
+            if marked[slot] {
+                continue;
+            }
+            marked[slot] = true;
+            let view = self.view();
+            if !view.is_leaf(index) {
+                for i in 0..view.get_childmask(index).count_ones() {
+                    stack.push(view.get_child(index, i as u8));
                 }
             }
-        } else {
-            None
         }
-    }
-
-    fn get_recurse(&self, node_ref: &SvoNodeRef, position: UVec3, level: u32) -> SvodagQueryResult {
-        let node = self.deref(node_ref);
-        if node.leaf {
-            SvodagQueryResult::Some { depth: level }
-        } else {
-            if let Some(child) = node.child_at(position, level, self.depth) {
-                self.get_recurse(child, position, level + 1)
-            } else {
-                SvodagQueryResult::None { depth: level + 1 }
+        for slot in 0..self.live.len() {
+            if self.live[slot] && !marked[slot] {
+                let index = unsafe { SvoIndex::from_raw((slot * 9) as u32) };
+                let node = self.view().node(index);
+                self.interned.remove(&node);
+                self.live[slot] = false;
+                self.free.push(slot);
             }
         }
-    }
-
-    pub fn get(&self, root: &SvoNodeRef, position: UVec3) -> SvodagQueryResult {
-        self.get_recurse(root, position, 0)
-    }
-
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
-    pub fn serialize(&self) -> (Vec<u32>, Vec<SvoIndex>) {
-        let mut actual_indices: Vec<SvoIndex> = Vec::new();
-        let mut result: Vec<u32> = Vec::new();
-
-        for node in &self.nodes {
-            let serialized_index =
-                u32::try_from(result.len()).expect("serialized SVoDAG exceeds u32 index space");
-            actual_indices.push(unsafe { SvoIndex::from_raw(serialized_index) });
-            result.push((node.child_mask as u32) << 8 | node.leaf as u32);
-
-            for child in &node.children {
-                let child_index = u32::try_from(self.indices[child.0])
-                    .expect("SVoDAG node count exceeds u32 index space");
-                result.push(child_index);
-            }
-        }
-
-        let mut index = 0;
-        for node in &self.nodes {
-            index += 1;
-            for _ in &node.children {
-                result[index] = actual_indices[result[index as usize] as usize].to_raw();
-
-                index += 1;
-            }
-        }
-
-        (result, actual_indices)
-    }
-}
-
-impl fmt::Display for Svodag {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "depth: {}", self.depth)?;
-        writeln!(f, "indices: {:?}", self.indices)?;
-        writeln!(f, "node count: {:?}", self.nodes.len())?;
-        writeln!(f, "free indices: {:?}", self.free_indices)?;
-        writeln!(f, " nodes: ")?;
-        for i in 0..self.indices.len() {
-            if self.indices[i] != usize::MAX {
-                writeln!(
-                    f,
-                    "reference: {} refcount: {}\n{}",
-                    i,
-                    self.reference_counts.borrow()[self.indices[i]],
-                    self.nodes[self.indices[i]]
-                )?;
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -525,9 +179,12 @@ pub fn get_example_svodag(depth: u32) -> (Svodag, SvoNodeRef) {
                 }
             }
         }
+        if let Some(root) = root {
+            dag.collect(&[root]);
+        }
     }
 
-    println!("{}", dag.len());
+    dag.collect(&[root.unwrap()]);
 
     (dag, root.unwrap())
 }
@@ -535,72 +192,173 @@ pub fn get_example_svodag(depth: u32) -> (Svodag, SvoNodeRef) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::uvec3;
     use proptest::prelude::*;
     use std::collections::HashSet;
 
     #[test]
-    fn query_result_helpers_report_state_and_depth() {
-        let found = SvodagQueryResult::Some { depth: 3 };
-        let missing = SvodagQueryResult::None { depth: 2 };
-
-        assert!(found.is_some());
-        assert!(!found.is_none());
-        assert_eq!(found.depth(), 3);
-
-        assert!(missing.is_none());
-        assert!(!missing.is_some());
-        assert_eq!(missing.depth(), 2);
-    }
-
-    #[test]
-    fn node_child_lookup_uses_packed_child_mask_order() {
-        let node = SvoNode {
-            child_mask: 0b1000_1001,
-            leaf: false,
-            children: vec![SvoNodeRef(12), SvoNodeRef(11), SvoNodeRef(10)],
+    fn fixed_slice_backend_uses_the_shared_editor_and_view() {
+        use shader::svodag::SvodagSliceStorage;
+        let mut words = [0u32; 9 * 256];
+        let mut used = 0;
+        let mut storage = SvodagSliceStorage {
+            data: &mut words,
+            used: &mut used,
         };
-
-        assert_eq!(node.index_of_morton(0), 2);
-        assert_eq!(node.index_of_morton(3), 1);
-        assert_eq!(node.index_of_morton(7), 0);
-        assert_eq!(node.index_of(uvec3(1, 1, 1), 0, 1), 0);
-
-        assert_eq!(node.child_at(uvec3(0, 0, 0), 0, 1), Some(&SvoNodeRef(10)));
-        assert_eq!(node.child_at(uvec3(0, 1, 1), 0, 1), Some(&SvoNodeRef(11)));
-        assert_eq!(node.child_at(uvec3(1, 1, 1), 0, 1), Some(&SvoNodeRef(12)));
-        assert_eq!(node.child_at(uvec3(1, 0, 0), 0, 1), None);
-    }
-
-    #[test]
-    fn display_impls_include_node_and_reference_details() {
-        let node_ref = SvoNodeRef(42);
-        assert_eq!(node_ref.to_string(), "42");
+        let mut root = None;
+        for x in 0..4 {
+            for y in 0..4 {
+                for z in 0..4 {
+                    root = svodag::edit(&mut storage, root, uvec3(x, y, z), 2, true);
+                }
+            }
+        }
+        let full = root.unwrap();
+        assert!(storage.view().is_leaf(full));
+        let hole = uvec3(1, 2, 3);
+        let partial = svodag::edit(&mut storage, root, hole, 2, false).unwrap();
+        for x in 0..4 {
+            for y in 0..4 {
+                for z in 0..4 {
+                    let p = uvec3(x, y, z);
+                    assert_eq!(storage.view().get(partial, p, 2).is_some(), p != hole);
+                }
+            }
+        }
         assert_eq!(
-            SvodagQueryResult::Some { depth: 4 }.to_string(),
-            "Some { depth: 4 }"
+            svodag::edit(&mut storage, Some(partial), hole, 2, true),
+            Some(full)
         );
+    }
 
-        let node = SvoNode {
-            child_mask: 0b1000_0001,
-            leaf: false,
-            children: vec![SvoNodeRef(7), SvoNodeRef(3)],
-        };
-        let node_display = node.to_string();
-        assert!(node_display.contains("leaf: false child_mask: 0b10000001"));
-        assert!(node_display.contains("x: 0 y: 0 z: 0 : 3"));
-        assert!(node_display.contains("x: 1 y: 1 z: 1 : 7"));
-        assert!(node_display.contains("Empty"));
-
-        let depth = 1;
+    #[test]
+    fn deep_hole_in_full_tree_preserves_every_other_voxel_and_recollapses() {
+        let depth = 3;
         let mut dag = Svodag::new(depth);
-        let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
-        let dag_display = dag.to_string();
-        assert!(dag_display.contains("depth: 1"));
-        assert!(dag_display.contains("node count:"));
-        assert!(dag_display.contains("reference:"));
+        let mut root = None;
+        for x in 0..8 {
+            for y in 0..8 {
+                for z in 0..8 {
+                    root = Some(dag.insert_mutate(root, uvec3(x, y, z), depth));
+                }
+            }
+        }
+        let full = root.unwrap();
+        assert!(dag.view().is_leaf(full));
+        assert_eq!(dag.insert(Some(&full), uvec3(2, 3, 6), depth), full);
+        let hole = uvec3(2, 3, 6);
+        let partial = dag.remove(Some(&full), hole, depth).unwrap();
+        for x in 0..8 {
+            for y in 0..8 {
+                for z in 0..8 {
+                    let p = uvec3(x, y, z);
+                    assert_eq!(dag.get(&partial, p).is_some(), p != hole);
+                }
+            }
+        }
+        assert_eq!(dag.insert(Some(&partial), hole, depth), full);
+    }
 
-        dag.release(root);
+    #[test]
+    fn tracing_keeps_all_roots_and_reuses_slots_without_stale_interning() {
+        let mut dag = Svodag::new(3);
+        let a = uvec3(0, 0, 0);
+        let b = uvec3(7, 7, 7);
+        let first = dag.insert(None, a, 3);
+        let second = dag.insert(Some(&first), b, 3);
+        let discarded = dag.insert(Some(&second), uvec3(3, 4, 5), 3);
+        let before = dag.len();
+        dag.collect(&[first, second]);
+        assert!(dag.len() < before);
+        assert!(dag.get(&first, a).is_some());
+        assert!(dag.get(&first, b).is_none());
+        assert!(dag.get(&second, a).is_some());
+        assert!(dag.get(&second, b).is_some());
+        let capacity = dag.data().len();
+        let other = dag.insert(Some(&first), uvec3(4, 3, 2), 3);
+        assert_eq!(dag.data().len(), capacity);
+        assert!(dag.get(&other, uvec3(4, 3, 2)).is_some());
+        let rebuilt = dag.insert(Some(&second), uvec3(3, 4, 5), 3);
+        assert!(dag.get(&rebuilt, uvec3(3, 4, 5)).is_some());
+        assert_eq!(dag.insert(Some(&second), uvec3(3, 4, 5), 3), rebuilt);
+        let _ = discarded;
+        dag.collect(&[first, other, rebuilt]);
+        assert!(dag.get(&first, a).is_some());
+        assert!(dag.get(&other, uvec3(4, 3, 2)).is_some());
+        assert!(dag.get(&rebuilt, b).is_some());
+        dag.collect(&[]);
+        assert!(dag.is_empty());
+    }
+
+    #[test]
+    fn mixed_edits_and_collection_match_dense_voxels() {
+        let mut dag = Svodag::new(2);
+        let mut root = None;
+        let mut voxels = [false; 64];
+        let mut state = 0x8273_1a5du32;
+        let mut retained = None;
+        let mut retained_voxels = voxels;
+        for step in 0..300 {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let index = ((state >> 8) % 64) as usize;
+            let position = uvec3(
+                (index >> 4) as u32,
+                ((index >> 2) & 3) as u32,
+                (index & 3) as u32,
+            );
+            let occupied = (state >> 24) & 1 != 0;
+            root = if occupied {
+                Some(dag.insert(root.as_ref(), position, 2))
+            } else {
+                dag.remove(root.as_ref(), position, 2)
+            };
+            voxels[index] = occupied;
+            if step == 100 {
+                retained = root;
+                retained_voxels = voxels;
+            }
+            if step % 11 == 0 {
+                let roots: Vec<_> = [root, retained].into_iter().flatten().collect();
+                dag.collect(&roots);
+            }
+            for i in 0..64 {
+                let p = uvec3((i >> 4) as u32, ((i >> 2) & 3) as u32, (i & 3) as u32);
+                assert_eq!(
+                    root.is_some_and(|r| dag.get(&r, p).is_some()),
+                    voxels[i],
+                    "step {step}, voxel {i}"
+                );
+                if let Some(old) = retained {
+                    assert_eq!(
+                        dag.get(&old, p).is_some(),
+                        retained_voxels[i],
+                        "retained root at step {step}, voxel {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn identical_subtrees_are_hash_consed() {
+        let mut dag = Svodag::new(2);
+        let first = dag.insert(None, uvec3(0, 0, 0), 2);
+        let root = dag.insert(Some(&first), uvec3(2, 0, 0), 2);
+        let view = dag.view();
+        assert_eq!(view.node(root).child(0), view.node(root).child(4));
+        dag.collect(&[root]);
+        assert!(dag.get(&root, uvec3(0, 0, 0)).is_some());
+        assert!(dag.get(&root, uvec3(2, 0, 0)).is_some());
+    }
+
+    #[test]
+    fn zero_depth_edits_work() {
+        let mut dag = Svodag::new(0);
+        let root = dag.insert(None, UVec3::ZERO, 0);
+        assert_eq!(
+            dag.get(&root, UVec3::ZERO),
+            SvodagQueryResult::Some { depth: 0 }
+        );
+        assert_eq!(dag.remove(Some(&root), UVec3::ZERO, 0), None);
     }
 
     #[test]
@@ -619,44 +377,6 @@ mod tests {
             dag.get(&root_after_duplicate, position),
             SvodagQueryResult::Some { depth }
         );
-
-        dag.release(root_after_duplicate);
-    }
-
-    #[test]
-    fn cloned_node_ref_keeps_nodes_alive_until_released() {
-        let depth = 2;
-        let position = uvec3(1, 2, 3);
-        let mut dag = Svodag::new(depth);
-
-        let root = dag.insert_mutate(None, position, depth);
-        let cloned = dag.clone_node_ref(&root);
-        let initial_len = dag.len();
-
-        dag.release(root);
-
-        assert_eq!(dag.len(), initial_len);
-        assert_eq!(
-            dag.get(&cloned, position),
-            SvodagQueryResult::Some { depth }
-        );
-
-        dag.release(cloned);
-        assert_eq!(dag.len(), 0);
-    }
-
-    #[test]
-    fn deref_mut_returns_mutable_node_without_changing_mapping() {
-        let depth = 1;
-        let mut dag = Svodag::new(depth);
-        let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
-
-        let root_index = dag.to_index(&root);
-        dag.deref_mut(&root).leaf = dag.deref(&root).leaf;
-
-        assert_eq!(dag.to_index(&root), root_index);
-
-        dag.release(root);
     }
 
     #[test]
@@ -674,8 +394,6 @@ mod tests {
             SvodagQueryResult::Some { depth }
         );
         assert!(dag.get(&root_after_remove, absent).is_none());
-
-        dag.release(root_after_remove);
     }
 
     #[test]
@@ -701,8 +419,6 @@ mod tests {
             SvodagQueryResult::Some { depth }
         );
         assert!(dag.get(&root_after_remove, removed).is_none());
-
-        dag.release(root_after_remove);
     }
 
     #[test]
@@ -734,8 +450,6 @@ mod tests {
             dag.get(&root_after_remove, kept_outside_child),
             SvodagQueryResult::Some { depth }
         );
-
-        dag.release(root_after_remove);
     }
 
     #[test]
@@ -754,14 +468,14 @@ mod tests {
         }
 
         let full_root = root.unwrap();
-        assert!(dag.deref(&full_root).leaf);
+        assert!(dag.view().is_leaf(full_root));
 
         let root_after_remove = dag.remove_mutate(Some(full_root), removed, depth).unwrap();
-        let root_node = dag.deref(&root_after_remove);
-        let removed_morton = morton_at(removed, 0, depth);
+        let root_node = dag.view().node(root_after_remove);
+        let removed_morton = ((removed.x << 2) | (removed.y << 1) | removed.z) as usize;
 
-        assert!(!root_node.leaf);
-        assert_eq!(root_node.child_mask, 0b1111_1111 ^ (1 << removed_morton));
+        assert!(!root_node.is_leaf());
+        assert_eq!(root_node.mask(), 0b1111_1111 ^ (1 << removed_morton));
         assert_eq!(
             dag.get(&root_after_remove, removed),
             SvodagQueryResult::None { depth }
@@ -770,8 +484,6 @@ mod tests {
             dag.get(&root_after_remove, uvec3(0, 0, 0)),
             SvodagQueryResult::Some { depth }
         );
-
-        dag.release(root_after_remove);
     }
 
     #[test]
@@ -784,10 +496,9 @@ mod tests {
             root = Some(dag.insert_mutate(root, position, depth));
         }
 
-        let (serialized, mapping) = dag.serialize();
-        let view = SerializedSvodagView::from_slice(&serialized);
+        let view = dag.view();
         let root = root.unwrap();
-        let root_index = mapping[dag.to_index(&root)];
+        let root_index = root;
 
         assert_eq!(view.get_childmask(root_index), 0b0100_0100);
 
@@ -802,8 +513,6 @@ mod tests {
 
         assert_eq!(view.get_childmask(nested_morton_6_branch), 0b0100_0000);
         assert_eq!(view.get_childmask(nested_morton_2_branch), 0b0001_0000);
-
-        dag.release(root);
     }
 
     #[test]
@@ -818,8 +527,6 @@ mod tests {
             );
         }
         assert!(dag.get(&root, uvec3(31, 31, 31)).is_none());
-
-        dag.release(root);
     }
 
     #[test]
@@ -827,50 +534,7 @@ mod tests {
         let (mut dag, root) = get_example_svodag(7);
 
         assert!(dag.len() > 1_000);
-        let (serialized, mapping) = dag.serialize();
-        assert!(mapping
-            .iter()
-            .all(|index| (index.to_raw() as usize) < serialized.len()));
-
-        dag.release(root);
-    }
-
-    #[test]
-    fn release_removes_unreferenced_nodes() {
-        let depth = 2;
-        let mut dag = Svodag::new(depth);
-
-        let root = dag.insert_mutate(None, uvec3(1, 2, 3), depth);
-        assert!(dag.len() > 0);
-
-        dag.release(root);
-
-        assert_eq!(dag.len(), 0);
-        assert!(dag.indices.iter().all(|index| *index == usize::MAX));
-        assert_eq!(dag.reference_counts.borrow().len(), 0);
-    }
-
-    #[test]
-    fn test_regression_free_last_node() {
-        let depth = 2;
-        let width = 1 << depth;
-
-        let mut dag = Svodag::new(depth);
-
-        let mut root: Option<SvoNodeRef> = None;
-        for i in 0..width {
-            for j in 0..width {
-                for k in 0..width {
-                    if (i | j | k) == i + j + k {
-                        root = Some(dag.insert_mutate(root, uvec3(i, j, k), depth));
-                        assert!(dag
-                            .indices
-                            .iter()
-                            .all(|i| *i == usize::MAX || *i < dag.nodes.len()));
-                    }
-                }
-            }
-        }
+        assert!((root.to_raw() as usize) < dag.data().len());
     }
 
     proptest! {
@@ -890,8 +554,7 @@ mod tests {
             // Verify get returns the depth (meaning found)
             prop_assert_eq!(dag.get(&root, pos), SvodagQueryResult::Some{depth});
 
-            // Clean up not strictly needed for test correctness but good for sanity
-            dag.release(root);
+
         }
 
         #[test]
@@ -939,18 +602,15 @@ mod tests {
                 prop_assert!(dag.get(&root_ref, p).is_some(), "Point {:?} missing", p);
             }
 
-             // Verify points NOT in the set return None (probabilistic check)
-            for _ in 0..10 {
-                let x = rand::random::<u32>() % size;
-                let y = rand::random::<u32>() % size;
-                let z = rand::random::<u32>() % size;
-                let p = uvec3(x, y, z);
-                if !unique_points.contains(&p) {
-                    prop_assert!(dag.get(&root_ref, p).is_none(), "Point {:?} should not be present", p);
+            for x in 0..size {
+                for y in 0..size {
+                    for z in 0..size {
+                        let p = uvec3(x, y, z);
+                        prop_assert_eq!(dag.get(&root_ref, p).is_some(), unique_points.contains(&p));
+                    }
                 }
             }
 
-            dag.release(root_ref);
         }
 
         #[test]
@@ -970,13 +630,12 @@ mod tests {
              }
 
              let root_ref = root.unwrap();
-             let root_node = dag.deref(&root_ref);
+             let root_node = dag.view().node(root_ref);
 
              // If full, the root node should be a leaf
-             prop_assert!(root_node.leaf, "Root should be a leaf when fully filled");
-             prop_assert_eq!(root_node.child_mask, 0, "Leaf node should have empty child mask");
+             prop_assert!(root_node.is_leaf(), "Root should be a leaf when fully filled");
+             prop_assert_eq!(root_node.mask(), 0, "Leaf node should have empty child mask");
 
-             dag.release(root_ref);
         }
     }
 }

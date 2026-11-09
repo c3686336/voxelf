@@ -1,7 +1,4 @@
-use crate::{
-    svodag::{SvoNode, SvoNodeRef},
-    Svodag,
-};
+use crate::{svodag::SvoNodeRef, Svodag};
 use glam::*;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -53,9 +50,10 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
     tmin = tmin.max(0.0);
 
     let mut position = Vec3::ONE;
-    let mut parent = svodag.deref(root_ref);
+    let view = svodag.view();
+    let mut parent = *root_ref;
 
-    if parent.leaf && tmin <= tmax {
+    if view.is_leaf(parent) && tmin <= tmax {
         return true;
     }
     let mut idx = 0;
@@ -75,17 +73,19 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         position.z = 1.5;
     }
 
-    let mut parent_stack = Vec::<&SvoNode>::new();
+    let mut parent_stack = Vec::<SvoNodeRef>::new();
 
     loop {
         let t2_current_cube = (position - origin) * dir_inv;
         let tmax_current_cube = t2_current_cube.min_element();
 
         // PUSH
-        if (parent.child_mask >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
-            let child = svodag.deref(&parent.children[parent.index_of_morton(idx ^ mask)]);
+        let child_mask = view.get_childmask(parent);
+        if (child_mask >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
+            let child_index = ((child_mask >> (idx ^ mask)).count_ones() - 1) as u8;
+            let child = view.get_child(parent, child_index);
 
-            if child.leaf {
+            if view.is_leaf(child) {
                 return true;
             }
 
@@ -311,7 +311,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         // voxel at (0,0,0) is in [1.0, 1.125]x[1.0, 1.125]x[1.0, 1.125]
         let origin = vec3(0.5, 1.05, 1.05);
@@ -321,8 +320,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -332,7 +331,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         // ray passing above the voxel
         let origin = vec3(0.5, 1.5, 1.5);
@@ -342,8 +340,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -353,7 +351,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         // voxel at (7,7,7) is in [1.875, 2.0]x[1.875, 2.0]x[1.875, 2.0]
         let origin = vec3(2.5, 1.95, 1.95);
@@ -363,8 +360,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -374,7 +371,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         let origin = vec3(2.5, 1.5, 1.5);
         let direction = vec3(-1.0, 0.0, 0.0);
@@ -383,8 +379,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -395,7 +391,6 @@ mod tests {
         // depth 2, coords 0 to 3.
         let root = dag.insert_mutate(None, uvec3(1, 1, 1), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         // voxel at (1,1,1) is in [1.25, 1.5]x[1.25, 1.5]x[1.25, 1.5]
         let origin = vec3(0.5, 0.5, 0.5);
@@ -405,8 +400,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -416,7 +411,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         // ray starts inside the [1.0, 1.125] box
         let origin = vec3(1.05, 1.05, 1.05);
@@ -426,8 +420,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -437,7 +431,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         let origin = vec3(1.5, 1.95, 1.95);
         let direction = vec3(1.0, 0.0, 0.0);
@@ -446,8 +439,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -457,7 +450,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         let origin = vec3(1.5, 1.5, 1.5);
         let direction = vec3(1.0, 0.0, 0.0);
@@ -466,8 +458,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -477,7 +469,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 7, 7), depth);
 
-        let (serialized, mapping) = dag.serialize();
 
         let origin = vec3(1.5, 1.95, 1.95);
         let direction = vec3(1.0, 0.0, 0.0);
@@ -486,8 +477,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -497,7 +488,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth); // voxel at [1.875, 2.0]
 
-        let (serialized, mapping) = dag.serialize();
 
         let origin = vec3(0.5, 1.95, 1.95);
         let direction = vec3(1.0, 0.0, 0.0);
@@ -506,8 +496,8 @@ mod tests {
             origin,
             direction,
             dag.depth,
-            shader::SerializedSvodagView::from_slice(&serialized),
-            mapping[dag.to_index(&root)]
+            dag.view(),
+            root
         ));
     }
 
@@ -522,9 +512,8 @@ mod tests {
         }
 
         let root = root.unwrap();
-        let (serialized, mapping) = dag.serialize();
-        let serialized_view = shader::SerializedSvodagView::from_slice(&serialized);
-        let serialized_root = mapping[dag.to_index(&root)];
+        let serialized_view = dag.view();
+        let serialized_root = root;
 
         for (origin, direction, expected) in [
             (vec3(2.5, 1.8125, 1.0625), vec3(-1.0, 0.0, 0.0), true),
@@ -542,7 +531,6 @@ mod tests {
             );
         }
 
-        dag.release(root);
     }
 
     use crate::svodag::Svodag;
@@ -665,14 +653,13 @@ mod tests {
 
             let direction = (target - origin).normalize();
 
-            let (serialized, mapping) = dag.serialize();
 
             prop_assert!(shader::raymarch(
                 origin,
                 direction,
                 dag.depth,
-                shader::SerializedSvodagView::from_slice(&serialized),
-                mapping[dag.to_index(&root)]
+                dag.view(),
+                root
             ));
         }
 
@@ -694,14 +681,13 @@ mod tests {
             let origin = vec3(ox, oy, oz);
             let direction = vec3(dx, dy, dz).normalize();
 
-            let (serialized, mapping) = dag.serialize();
 
             prop_assert!(!shader::raymarch(
                 origin,
                 direction,
                 dag.depth,
-                shader::SerializedSvodagView::from_slice(&serialized),
-                mapping[dag.to_index(&root)]
+                dag.view(),
+                root
             ));
         }
     }

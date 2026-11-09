@@ -5,6 +5,8 @@ extern crate spirv_std;
 #[cfg(test)]
 extern crate std;
 
+pub mod svodag;
+
 use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
 use spirv_std::image::{Image2d, SampledImage};
 #[allow(unused_imports)]
@@ -73,7 +75,7 @@ impl SvodagMetaData {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, bytemuck::AnyBitPattern)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, bytemuck::AnyBitPattern)]
 #[repr(C)]
 pub struct SvoIndex(u32);
 
@@ -89,11 +91,11 @@ impl SvoIndex {
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct SerializedSvodagView<'a> {
+pub struct SvodagView<'a> {
     data: &'a [u32],
 }
 
-impl<'a> SerializedSvodagView<'a> {
+impl<'a> SvodagView<'a> {
     pub fn get_childmask(&self, index: SvoIndex) -> u8 {
         (self.data[index.to_raw() as usize] >> 8) as u8
     }
@@ -117,7 +119,7 @@ impl<'a> SerializedSvodagView<'a> {
     }
 }
 
-fn index_of_morton(svodag: &SerializedSvodagView, node: SvoIndex, morton: u8) -> u8 {
+fn index_of_morton(svodag: &SvodagView, node: SvoIndex, morton: u8) -> u8 {
     ((svodag.get_childmask(node) >> morton).count_ones().max(1) - 1) as u8
 }
 
@@ -125,7 +127,7 @@ pub fn raymarch(
     origin: Vec3,
     direction: Vec3,
     _max_depth: u32,
-    svodag: SerializedSvodagView,
+    svodag: SvodagView,
     root_ref: SvoIndex,
 ) -> bool {
     let dir_threshold = -direction.abs().clamp(Vec3::ONE * f32::EPSILON, Vec3::MAX);
@@ -187,7 +189,6 @@ pub fn raymarch(
 
         // PUSH
         if (svodag.get_childmask(parent) >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
-            // let child = svodag.deref(&parent.children[parent.index_of_morton(idx ^ mask)]);
             let child = svodag.get_child(parent, index_of_morton(&svodag, parent, idx ^ mask));
 
             if svodag.is_leaf(child) {
@@ -307,7 +308,7 @@ pub fn main_fs(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] camera: &[CameraData],
     #[spirv(push_constant)] constants: &PushConsts,
 ) {
-    let svodag = SerializedSvodagView::from_slice(buffer);
+    let svodag = SvodagView::from_slice(buffer);
     let camera = camera[0];
 
     let camera_origin = vec4_to_vec3(camera.origin);
@@ -421,7 +422,7 @@ mod tests {
     #[test]
     fn serialized_view_reads_node_metadata_and_children() {
         let data = [0b1010_0101_0000_0001, 3, 7, 11, 13];
-        let view = SerializedSvodagView::from_slice(&data);
+        let view = SvodagView::from_slice(&data);
         let root = index(0);
 
         assert_eq!(view.get_data(), &data);
@@ -434,7 +435,7 @@ mod tests {
     #[test]
     fn index_of_morton_uses_packed_child_mask_order() {
         let data = [0b1000_1001_0000_0000];
-        let view = SerializedSvodagView::from_slice(&data);
+        let view = SvodagView::from_slice(&data);
         let root = index(0);
 
         assert_eq!(index_of_morton(&view, root, 0), 2);
@@ -450,7 +451,7 @@ mod tests {
             vec3(0.5, 1.05, 1.05),
             vec3(1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -463,7 +464,7 @@ mod tests {
             vec3(0.5, 1.95, 1.95),
             vec3(1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -476,7 +477,7 @@ mod tests {
             vec3(2.5, 1.95, 1.95),
             vec3(-1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -489,7 +490,7 @@ mod tests {
             vec3(2.5, 1.5, 1.5),
             vec3(-1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -502,7 +503,7 @@ mod tests {
             vec3(0.5, 0.5, 0.5),
             vec3(1.0, 1.0, 1.0).normalize(),
             2,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -515,7 +516,7 @@ mod tests {
             vec3(1.05, 1.05, 1.05),
             vec3(1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -528,7 +529,7 @@ mod tests {
             vec3(1.5, 1.95, 1.95),
             vec3(1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -541,7 +542,7 @@ mod tests {
             vec3(1.5, 1.5, 1.5),
             vec3(1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -554,7 +555,7 @@ mod tests {
             vec3(1.5, 1.95, 1.95),
             vec3(1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -567,7 +568,7 @@ mod tests {
             vec3(0.5, 1.5, 1.5),
             vec3(1.0, 0.0, 0.0),
             3,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -580,7 +581,7 @@ mod tests {
             vec3(1.5, 1.5, 3.0),
             vec3(0.0, 0.0, -1.0),
             1,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -593,7 +594,7 @@ mod tests {
             vec3(3.0, 3.0, 3.0),
             vec3(1.0, 0.0, 0.0),
             1,
-            SerializedSvodagView::from_slice(&data),
+            SvodagView::from_slice(&data),
             index(0),
         ));
     }
@@ -608,7 +609,7 @@ mod tests {
             vec3(0.5, supported_center, supported_center),
             vec3(1.0, 0.0, 0.0),
             supported_depth,
-            SerializedSvodagView::from_slice(&supported_data),
+            SvodagView::from_slice(&supported_data),
             index(0),
         ));
 
@@ -620,7 +621,7 @@ mod tests {
             vec3(0.5, overflow_center, overflow_center),
             vec3(1.0, 0.0, 0.0),
             overflow_depth,
-            SerializedSvodagView::from_slice(&overflow_data),
+            SvodagView::from_slice(&overflow_data),
             index(0),
         ));
     }

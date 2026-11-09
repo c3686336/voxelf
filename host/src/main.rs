@@ -3,7 +3,6 @@ pub mod svodag;
 pub mod vulkan;
 
 use glam::{vec3, Mat4, Vec3};
-use shader::SvoIndex;
 use std::collections::HashSet;
 use std::time::Instant;
 use svodag::{SvoNodeRef, Svodag};
@@ -182,7 +181,6 @@ impl Camera {
 struct App {
     vulkan: Vulkan,
     svodag: Svodag,
-    index_mapping: Vec<SvoIndex>,
     objects: Vec<Object>,
     camera: Camera,
     frame_timer: FrameTimer,
@@ -194,12 +192,10 @@ impl App {
         environment_path: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
         let (svodag, root) = svodag::get_example_svodag(7);
-        let (serialized, index_mapping) = svodag.serialize();
 
         Ok(Self {
-            vulkan: Vulkan::new(event_loop, serialized.as_ref(), 7, environment_path)?,
+            vulkan: Vulkan::new(event_loop, svodag.data(), 7, environment_path)?,
             svodag,
-            index_mapping,
             objects: vec![Object {
                 root,
                 transform: Mat4::IDENTITY,
@@ -241,7 +237,7 @@ impl ApplicationHandler for App {
                 self.update_camera(frame_timing.delta_seconds);
                 self.vulkan
                     .redraw(
-                        &[self.index_mapping[self.svodag.to_index(&self.objects[0].root)]],
+                        &[self.objects[0].root],
                         self.camera.view(),
                         frame_timing.fps,
                     )
