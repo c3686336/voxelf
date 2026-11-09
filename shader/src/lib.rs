@@ -5,6 +5,7 @@ extern crate spirv_std;
 #[cfg(test)]
 extern crate std;
 
+pub mod brdf;
 pub mod svodag;
 
 use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
