@@ -16,3 +16,15 @@ cargo run --release -- path/to/environment.hdr
 The image is decoded as linear floating-point radiance, uploaded as RGBA16F
 without tone mapping, and sampled for fragment-shader misses. The current
 display applies a simple Reinhard tone map.
+
+* SVoDAG
+
+The host builds the scene before rendering and uploads its DAG to the GPU once
+at startup. Subsequent host-side edits are not sent to the renderer.
+
+The host and shader use the same nine-word node layout and =SvodagView=.
+Edits produce persistent roots; they do not update older roots. Before
+reclaiming nodes with =Svodag::collect=, pass every root that must remain
+usable. Roots omitted from a collection become invalid and their slots may be
+reused. The fixed-slice storage supports the same editor without allocation;
+it has fixed capacity and does not collect.
