@@ -11,6 +11,7 @@ use frame::FrameResources;
 use passes::RaymarchPass;
 use resources::SceneResources;
 use shader::SvoIndex;
+use std::ops::Range;
 use std::path::Path;
 use surface::SurfaceState;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
@@ -51,6 +52,54 @@ impl Vulkan {
             raymarch_pass: None,
             svodag_depth,
         })
+    }
+
+    /// Uploads host edits after the previous frame has completed.
+    pub fn sync_svodag(&mut self, words: &[u32], dirty: &[Range<usize>]) -> Result<()> {
+        for range in dirty {
+            anyhow::ensure!(
+                range.start <= range.end && range.end <= words.len(),
+                "SVODAG dirty range is outside the supplied snapshot"
+            );
+        }
+
+        let capacity = usize::try_from(self.scene.svodag_buffer.len())?;
+        if words.len() > capacity {
+            let device_limit = self
+                .context
+                .device
+                .physical_device()
+                .properties()
+                .max_storage_buffer_range as usize
+                / std::mem::size_of::<u32>();
+            let max_capacity = usize::try_from(
+                vulkano::memory::allocator::DeviceLayout::MAX_SIZE
+                    / std::mem::size_of::<u32>() as u64,
+            )
+            .unwrap_or(usize::MAX)
+            .min(device_limit);
+            let capacity = grown_capacity(capacity, words.len(), max_capacity)?;
+            let buffer = SceneResources::svodag_buffer(&self.context, words, capacity)?;
+            let descriptor = self
+                .raymarch_pass
+                .as_ref()
+                .map(|pass| pass.scene_descriptor_set_for(&self.context, &self.scene, &buffer))
+                .transpose()?;
+
+            // All fallible work is finished before either resource is published.
+            self.scene.svodag_buffer = buffer;
+            if let (Some(pass), Some(descriptor)) = (&mut self.raymarch_pass, descriptor) {
+                pass.set_scene_descriptor_set(descriptor);
+            }
+        } else if dirty.iter().any(|range| !range.is_empty()) {
+            // One checked mapping ensures no partial writes if acquiring access fails.
+            // Dropping Vulkano's write guard flushes non-coherent host memory.
+            let mut mapped = self.scene.svodag_buffer.write()?;
+            for range in dirty {
+                mapped[range.clone()].copy_from_slice(&words[range.clone()]);
+            }
+        }
+        Ok(())
     }
 
     pub fn resumed(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -145,7 +194,7 @@ impl Vulkan {
                         ));
                     }
                     ui.separator();
-                    ui.label("W/A/S/D move, Q/E rise/drop, left mouse drag looks around.");
+                    ui.label("W/A/S/D move, Q/E rise/drop, left mouse drag looks around. Z removes / X adds voxel at view center.");
                 });
         });
 
@@ -232,5 +281,26 @@ impl Vulkan {
         }
 
         Ok(())
+    }
+}
+
+fn grown_capacity(current: usize, required: usize, max: usize) -> Result<usize> {
+    anyhow::ensure!(
+        required <= max,
+        "SVODAG buffer exceeds the maximum allocation size"
+    );
+    Ok(current.saturating_mul(2).min(max).max(required).max(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grown_capacity;
+
+    #[test]
+    fn buffer_capacity_grows_geometrically_and_respects_limits() {
+        assert_eq!(grown_capacity(4, 5, 100).unwrap(), 8);
+        assert_eq!(grown_capacity(4, 20, 100).unwrap(), 20);
+        assert_eq!(grown_capacity(60, 80, 100).unwrap(), 100);
+        assert!(grown_capacity(60, 101, 100).is_err());
     }
 }

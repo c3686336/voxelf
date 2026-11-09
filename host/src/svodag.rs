@@ -1,5 +1,5 @@
 use glam::{uvec3, vec2, vec3, UVec3, Vec3};
-use shader::svodag::{self, PackedNode, SvodagStorage};
+use shader::svodag::PackedNode;
 use shader::{SvoIndex, SvodagView};
 use std::collections::HashMap;
 
@@ -15,38 +15,107 @@ pub struct Svodag {
     live: Vec<bool>,
     free: Vec<usize>,
     interned: HashMap<PackedNode, SvoIndex>,
+    dirty: Vec<bool>,
 }
 
-impl SvodagStorage for Svodag {
-    fn view(&self) -> SvodagView<'_> {
-        SvodagView::from_slice(&self.data)
-    }
-
+impl Svodag {
     fn intern(&mut self, node: PackedNode) -> SvoIndex {
         if let Some(&index) = self.interned.get(&node) {
             return index;
         }
-        let slot = if let Some(slot) = self.free.pop() {
-            self.live[slot] = true;
-            slot
-        } else {
-            let slot = self.live.len();
-            self.live.push(true);
-            self.data.extend_from_slice(&[0; 9]);
-            slot
-        };
+        let slot = self.free.last().copied().unwrap_or(self.live.len());
         let offset = slot
             .checked_mul(9)
-            .and_then(|n| u32::try_from(n).ok())
+            .filter(|&n| n.checked_add(8).is_some_and(|end| end <= u32::MAX as usize))
             .expect("SVoDAG exceeds u32 address space");
-        self.data[offset as usize..offset as usize + 9].copy_from_slice(&node.words);
-        let index = unsafe { SvoIndex::from_raw(offset) };
+        if self.free.last().is_some() {
+            self.free.pop();
+            self.live[slot] = true;
+            self.dirty[slot] = true;
+        } else {
+            self.data.extend_from_slice(&[0; 9]);
+            self.live.push(true);
+            self.dirty.push(true);
+        }
+        self.data[offset..offset + 9].copy_from_slice(&node.words);
+        let index = unsafe { SvoIndex::from_raw(offset as u32) };
         self.interned.insert(node, index);
         index
     }
-}
 
-impl Svodag {
+    /// Returns a canonical empty root suitable for rendering an empty scene.
+    pub fn empty_root(&mut self) -> SvoNodeRef {
+        self.intern(PackedNode::branch())
+    }
+    fn edit(
+        &mut self,
+        root: Option<SvoIndex>,
+        position: UVec3,
+        depth: u32,
+        occupied: bool,
+    ) -> Option<SvoIndex> {
+        let mut path = [None; 32];
+        let mut current = root;
+        let mut level = 0;
+        while level < depth {
+            path[level as usize] = current;
+            current = match current {
+                Some(index) if self.view().is_leaf(index) => {
+                    if occupied {
+                        return root;
+                    }
+                    Some(index)
+                }
+                Some(index) => self
+                    .view()
+                    .node(index)
+                    .child(morton(position, level, depth)),
+                None => {
+                    if !occupied {
+                        return root;
+                    }
+                    None
+                }
+            };
+            level += 1;
+        }
+        let present = current.is_some_and(|index| self.view().is_leaf(index));
+        if occupied == present {
+            return root;
+        }
+        let mut result = if occupied {
+            Some(self.intern(PackedNode::leaf()))
+        } else {
+            None
+        };
+        while level > 0 {
+            level -= 1;
+            let m = morton(position, level, depth);
+            let mut node = match path[level as usize] {
+                Some(index) if self.view().is_leaf(index) => {
+                    let mut node = PackedNode::branch();
+                    for i in 0..8 {
+                        node.set_child(i, Some(index));
+                    }
+                    node
+                }
+                Some(index) => self.view().node(index),
+                None => PackedNode::branch(),
+            };
+            node.set_child(m, result);
+            if node.mask() == 0 {
+                result = None;
+            } else if node.mask() == 255
+                && (0..8).all(|i| self.view().is_leaf(node.child(i).unwrap()))
+            {
+                result = Some(self.intern(PackedNode::leaf()));
+            } else {
+                result = Some(self.intern(node));
+            }
+        }
+        result
+    }
+
     pub fn new(depth: u32) -> Self {
         assert!(depth <= 32);
         Self {
@@ -55,13 +124,35 @@ impl Svodag {
             live: Vec::new(),
             free: Vec::new(),
             interned: HashMap::new(),
+            dirty: Vec::new(),
         }
     }
     pub fn view(&self) -> SvodagView<'_> {
-        <Self as SvodagStorage>::view(self)
+        SvodagView::from_slice(&self.data)
     }
     pub fn data(&self) -> &[u32] {
         &self.data
+    }
+    /// Sorted, coalesced ranges of modified packed words since the last clear.
+    pub fn dirty_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        let mut ranges = Vec::new();
+        let mut start = None;
+        for (slot, &dirty) in self.dirty.iter().enumerate() {
+            if dirty {
+                start.get_or_insert(slot * 9);
+            } else if let Some(begin) = start.take() {
+                ranges.push(begin..slot * 9);
+            }
+        }
+        if let Some(begin) = start {
+            ranges.push(begin..self.data.len());
+        }
+        ranges
+    }
+
+    /// Call only after all dirty ranges have been successfully uploaded.
+    pub fn clear_dirty(&mut self) {
+        self.dirty.fill(false);
     }
     pub fn len(&self) -> usize {
         self.interned.len()
@@ -74,7 +165,7 @@ impl Svodag {
     }
     pub fn insert(&mut self, root: Option<&SvoNodeRef>, position: UVec3, depth: u32) -> SvoNodeRef {
         assert_eq!(depth, self.depth);
-        svodag::edit(self, root.copied(), position, depth, true).unwrap()
+        self.edit(root.copied(), position, depth, true).unwrap()
     }
     pub fn insert_mutate(
         &mut self,
@@ -91,7 +182,7 @@ impl Svodag {
         depth: u32,
     ) -> Option<SvoNodeRef> {
         assert_eq!(depth, self.depth);
-        svodag::edit(self, root.copied(), position, depth, false)
+        self.edit(root.copied(), position, depth, false)
     }
     pub fn remove_mutate(
         &mut self,
@@ -135,6 +226,13 @@ impl Svodag {
             }
         }
     }
+}
+
+fn morton(position: UVec3, level: u32, depth: u32) -> u8 {
+    let shift = depth - level - 1;
+    ((((position.x >> shift) & 1) << 2)
+        | (((position.y >> shift) & 1) << 1)
+        | ((position.z >> shift) & 1)) as u8
 }
 
 fn is_example_voxel(position: UVec3, width: u32) -> bool {
@@ -196,26 +294,20 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn fixed_slice_backend_uses_the_shared_editor_and_view() {
-        use shader::svodag::SvodagSliceStorage;
-        let mut words = [0u32; 9 * 256];
-        let mut used = 0;
-        let mut storage = SvodagSliceStorage {
-            data: &mut words,
-            used: &mut used,
-        };
+    fn host_editor_uses_shared_view() {
+        let mut storage = Svodag::new(2);
         let mut root = None;
         for x in 0..4 {
             for y in 0..4 {
                 for z in 0..4 {
-                    root = svodag::edit(&mut storage, root, uvec3(x, y, z), 2, true);
+                    root = Some(storage.insert(root.as_ref(), uvec3(x, y, z), 2));
                 }
             }
         }
         let full = root.unwrap();
         assert!(storage.view().is_leaf(full));
         let hole = uvec3(1, 2, 3);
-        let partial = svodag::edit(&mut storage, root, hole, 2, false).unwrap();
+        let partial = storage.remove(root.as_ref(), hole, 2).unwrap();
         for x in 0..4 {
             for y in 0..4 {
                 for z in 0..4 {
@@ -224,10 +316,66 @@ mod tests {
                 }
             }
         }
-        assert_eq!(
-            svodag::edit(&mut storage, Some(partial), hole, 2, true),
-            Some(full)
-        );
+        assert_eq!(storage.insert(Some(&partial), hole, 2), full);
+    }
+
+    #[test]
+    fn dirty_ranges_cover_growth_reuse_and_only_actual_writes() {
+        let mut dag = Svodag::new(1);
+        assert!(dag.dirty_ranges().is_empty());
+        let leaf = dag.intern(PackedNode::leaf());
+        let mut branches = Vec::new();
+        for i in 0..3 {
+            let mut node = PackedNode::branch();
+            node.set_child(i, Some(leaf));
+            branches.push(dag.intern(node));
+        }
+        assert_eq!(dag.dirty_ranges(), vec![0..36]);
+        dag.clear_dirty();
+        assert_eq!(dag.intern(PackedNode::leaf()), leaf);
+        dag.collect(&[branches[1]]);
+        assert!(dag.dirty_ranges().is_empty());
+        for i in 3..5 {
+            let mut node = PackedNode::branch();
+            node.set_child(i, Some(leaf));
+            dag.intern(node);
+        }
+        assert_eq!(dag.data().len(), 36);
+        assert_eq!(dag.dirty_ranges(), vec![9..18, 27..36]);
+        let mut node = PackedNode::branch();
+        node.set_child(5, Some(leaf));
+        dag.intern(node);
+        assert_eq!(dag.dirty_ranges(), vec![9..18, 27..45]);
+        dag.clear_dirty();
+        assert!(dag.dirty_ranges().is_empty());
+    }
+
+    #[test]
+    fn collection_does_not_discard_pending_writes() {
+        let mut dag = Svodag::new(1);
+        dag.insert(None, UVec3::ZERO, 1);
+        let pending = dag.dirty_ranges();
+        dag.collect(&[]);
+        assert_eq!(dag.dirty_ranges(), pending);
+        let replacement = dag.insert(None, uvec3(1, 1, 1), 1);
+        assert!(dag.get(&replacement, uvec3(1, 1, 1)).is_some());
+        assert_eq!(dag.dirty_ranges(), pending);
+    }
+
+    #[test]
+    fn empty_root_survives_collection_and_supports_edits() {
+        for depth in [0, 2] {
+            let mut dag = Svodag::new(depth);
+            let empty = dag.empty_root();
+            assert_eq!(empty, dag.empty_root());
+            assert!(dag.get(&empty, UVec3::ZERO).is_none());
+            let filled = dag.insert(Some(&empty), UVec3::ZERO, depth);
+            assert!(dag.get(&filled, UVec3::ZERO).is_some());
+            assert!(dag.remove(Some(&filled), UVec3::ZERO, depth).is_none());
+            dag.collect(&[empty]);
+            assert!(dag.get(&empty, UVec3::ZERO).is_none());
+            assert_eq!(dag.empty_root(), empty);
+        }
     }
 
     #[test]

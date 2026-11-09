@@ -65,55 +65,12 @@ impl PackedNode {
     }
 }
 
-/// Backends intern canonical nodes and expose exactly the memory consumed by the shader.
-/// Nodes must remain valid until the backend explicitly collects them.
-pub trait SvodagStorage {
-    fn view(&self) -> SvodagView<'_>;
-    fn intern(&mut self, node: PackedNode) -> SvoIndex;
-}
-
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum SvodagQueryResult {
     Some { depth: u32 },
     None { depth: u32 },
 }
 
-/// Fixed-capacity storage for shader-side or CPU edits without an allocator.
-/// The initialized prefix consists of nine-word slots; `used` is the slot count.
-/// This backend does not collect: create a fresh arena when its roots are retired.
-pub struct SvodagSliceStorage<'a> {
-    pub data: &'a mut [u32],
-    pub used: &'a mut u32,
-}
-
-impl SvodagStorage for SvodagSliceStorage<'_> {
-    fn view(&self) -> SvodagView<'_> {
-        SvodagView::from_slice(&self.data[..*self.used as usize * 9])
-    }
-
-    fn intern(&mut self, node: PackedNode) -> SvoIndex {
-        let used = *self.used as usize;
-        assert!(used <= self.data.len() / 9);
-        for slot in 0..used {
-            let offset = slot * 9;
-            let mut equal = true;
-            for i in 0..9 {
-                if self.data[offset + i] != node.words[i] {
-                    equal = false;
-                    break;
-                }
-            }
-            if equal {
-                return unsafe { SvoIndex::from_raw(offset as u32) };
-            }
-        }
-        assert!(used < self.data.len() / 9 && used <= u32::MAX as usize / 9);
-        let offset = used * 9;
-        self.data[offset..offset + 9].copy_from_slice(&node.words);
-        *self.used += 1;
-        unsafe { SvoIndex::from_raw(offset as u32) }
-    }
-}
 impl SvodagQueryResult {
     pub fn is_some(&self) -> bool {
         matches!(self, Self::Some { .. })
@@ -164,78 +121,4 @@ impl SvodagView<'_> {
             level += 1;
         }
     }
-}
-
-/// Persistent point edit, implemented without recursion or allocation for GPU use.
-/// `depth` is the voxel depth, and all returned roots stay valid until collection.
-pub fn edit<S: SvodagStorage>(
-    storage: &mut S,
-    root: Option<SvoIndex>,
-    position: UVec3,
-    depth: u32,
-    occupied: bool,
-) -> Option<SvoIndex> {
-    assert!(depth <= 32);
-    let mut path = [None; 32];
-    let mut current = root;
-    let mut level = 0;
-    while level < depth {
-        path[level as usize] = current;
-        current = match current {
-            Some(index) if storage.view().is_leaf(index) => {
-                if occupied {
-                    return root;
-                }
-                Some(index)
-            }
-            Some(index) => storage
-                .view()
-                .node(index)
-                .child(morton(position, level, depth)),
-            None => {
-                if !occupied {
-                    return root;
-                }
-                None
-            }
-        };
-        level += 1;
-    }
-    if occupied && current.is_some() {
-        return root;
-    }
-    if !occupied && current.is_none() {
-        return root;
-    }
-    let mut result = if occupied {
-        Some(storage.intern(PackedNode::leaf()))
-    } else {
-        None
-    };
-    while level > 0 {
-        level -= 1;
-        let m = morton(position, level, depth);
-        let mut node = match path[level as usize] {
-            Some(index) if storage.view().is_leaf(index) => {
-                let mut node = PackedNode::branch();
-                for i in 0..8 {
-                    node.set_child(i, Some(index));
-                }
-                node
-            }
-            Some(index) => storage.view().node(index),
-            None => PackedNode::branch(),
-        };
-        node.set_child(m, result);
-        if node.mask() == 0 {
-            result = None;
-        } else if node.mask() == 255
-            && (0..8).all(|i| storage.view().is_leaf(node.child(i).unwrap()))
-        {
-            result = Some(storage.intern(PackedNode::leaf()));
-        } else {
-            result = Some(storage.intern(node));
-        }
-    }
-    result
 }

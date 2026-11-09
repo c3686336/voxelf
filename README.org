@@ -19,12 +19,18 @@ display applies a simple Reinhard tone map.
 
 * SVoDAG
 
-The host builds the scene before rendering and uploads its DAG to the GPU once
-at startup. Subsequent host-side edits are not sent to the renderer.
+The host builds and edits the scene; host and shader use the same nine-word
+node layout and =SvodagView=. Look toward the scene and press =Z= to remove the
+first voxel under the center of the view, or =X= to add the adjacent voxel. If
+the ray misses the scene, =X= adds at the last voxel inside the scene bounds.
 
-The host and shader use the same nine-word node layout and =SvodagView=.
-Edits produce persistent roots; they do not update older roots. Before
-reclaiming nodes with =Svodag::collect=, pass every root that must remain
-usable. Roots omitted from a collection become invalid and their slots may be
-reused. The fixed-slice storage supports the same editor without allocation;
-it has fixed capacity and does not collect.
+Edits produce persistent roots; they do not update older roots. Before reclaiming
+nodes with =Svodag::collect=, pass every root that must remain usable. Roots
+omitted from a collection become invalid and their slots may be reused.
+
+The renderer uploads changed slot ranges before drawing with the new root. When
+the GPU buffer is too small, it is replaced with a larger buffer and the scene is
+uploaded again. Rendering currently waits for each frame to finish, so edits,
+collection, buffer writes and replacement occur with no GPU frame in flight.
+The application runs a synchronous collection after every 128 effective edits;
+large scenes may pause while it traces the retained roots.

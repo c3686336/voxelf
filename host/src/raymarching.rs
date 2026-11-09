@@ -311,7 +311,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
 
-
         // voxel at (0,0,0) is in [1.0, 1.125]x[1.0, 1.125]x[1.0, 1.125]
         let origin = vec3(0.5, 1.05, 1.05);
         let direction = vec3(1.0, 0.0, 0.0);
@@ -330,7 +329,6 @@ mod tests {
         let depth = 3;
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
-
 
         // ray passing above the voxel
         let origin = vec3(0.5, 1.5, 1.5);
@@ -351,7 +349,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
 
-
         // voxel at (7,7,7) is in [1.875, 2.0]x[1.875, 2.0]x[1.875, 2.0]
         let origin = vec3(2.5, 1.95, 1.95);
         let direction = vec3(-1.0, 0.0, 0.0);
@@ -370,7 +367,6 @@ mod tests {
         let depth = 3;
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
-
 
         let origin = vec3(2.5, 1.5, 1.5);
         let direction = vec3(-1.0, 0.0, 0.0);
@@ -391,7 +387,6 @@ mod tests {
         // depth 2, coords 0 to 3.
         let root = dag.insert_mutate(None, uvec3(1, 1, 1), depth);
 
-
         // voxel at (1,1,1) is in [1.25, 1.5]x[1.25, 1.5]x[1.25, 1.5]
         let origin = vec3(0.5, 0.5, 0.5);
         let direction = vec3(1.0, 1.0, 1.0).normalize();
@@ -410,7 +405,6 @@ mod tests {
         let depth = 3;
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 0, 0), depth);
-
 
         // ray starts inside the [1.0, 1.125] box
         let origin = vec3(1.05, 1.05, 1.05);
@@ -431,7 +425,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
 
-
         let origin = vec3(1.5, 1.95, 1.95);
         let direction = vec3(1.0, 0.0, 0.0);
 
@@ -449,7 +442,6 @@ mod tests {
         let depth = 3;
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth);
-
 
         let origin = vec3(1.5, 1.5, 1.5);
         let direction = vec3(1.0, 0.0, 0.0);
@@ -469,7 +461,6 @@ mod tests {
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(0, 7, 7), depth);
 
-
         let origin = vec3(1.5, 1.95, 1.95);
         let direction = vec3(1.0, 0.0, 0.0);
 
@@ -487,7 +478,6 @@ mod tests {
         let depth = 3;
         let mut dag = Svodag::new(depth);
         let root = dag.insert_mutate(None, uvec3(7, 7, 7), depth); // voxel at [1.875, 2.0]
-
 
         let origin = vec3(0.5, 1.95, 1.95);
         let direction = vec3(1.0, 0.0, 0.0);
@@ -530,7 +520,6 @@ mod tests {
                 "serialized traversal diverged for {origin}"
             );
         }
-
     }
 
     use crate::svodag::Svodag;

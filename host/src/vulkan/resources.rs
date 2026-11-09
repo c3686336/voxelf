@@ -35,19 +35,8 @@ impl SceneResources {
         serialized_svodag: &[u32],
         environment_path: Option<&Path>,
     ) -> Result<Self> {
-        let svodag_buffer = Buffer::from_iter(
-            context.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::STORAGE_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            serialized_svodag.iter().copied(),
-        )?;
+        let svodag_buffer =
+            Self::svodag_buffer(context, serialized_svodag, serialized_svodag.len().max(1))?;
         let metadata_buffer = Buffer::new_slice(
             context.memory_allocator.clone(),
             BufferCreateInfo {
@@ -68,6 +57,30 @@ impl SceneResources {
             environment,
             _metadata_buffer: metadata_buffer,
         })
+    }
+
+    pub fn svodag_buffer(
+        context: &GpuContext,
+        words: &[u32],
+        capacity: usize,
+    ) -> Result<Subbuffer<[u32]>> {
+        let buffer = Buffer::new_slice(
+            context.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            u64::try_from(capacity)?,
+        )?;
+        if !words.is_empty() {
+            buffer.write()?[..words.len()].copy_from_slice(words);
+        }
+        Ok(buffer)
     }
 }
 

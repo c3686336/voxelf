@@ -126,29 +126,13 @@ impl RaymarchPass {
                 ..GraphicsPipelineCreateInfo::layout(layout)
             },
         )?;
-        let scene_descriptor_set_layout = pipeline
-            .layout()
-            .set_layouts()
-            .first()
-            .context("Raymarch pipeline has no descriptor set layout")?;
         let frame_descriptor_set_layout = pipeline
             .layout()
             .set_layouts()
             .get(1)
             .context("Raymarch pipeline has no frame descriptor set layout")?;
-        let scene_descriptor_set = DescriptorSet::new(
-            context.descriptor_set_allocator.clone(),
-            scene_descriptor_set_layout.clone(),
-            [
-                WriteDescriptorSet::buffer(0, scene.svodag_buffer.clone()),
-                WriteDescriptorSet::image_view_sampler(
-                    1,
-                    scene.environment.view.clone(),
-                    scene.environment.sampler.clone(),
-                ),
-            ],
-            [],
-        )?;
+        let scene_descriptor_set =
+            Self::make_scene_descriptor_set(context, &pipeline, scene, &scene.svodag_buffer)?;
         let frame_descriptor_sets = frames
             .camera_buffers()
             .iter()
@@ -168,6 +152,45 @@ impl RaymarchPass {
             scene_descriptor_set,
             frame_descriptor_sets,
         })
+    }
+
+    fn make_scene_descriptor_set(
+        context: &GpuContext,
+        pipeline: &GraphicsPipeline,
+        scene: &SceneResources,
+        buffer: &Subbuffer<[u32]>,
+    ) -> Result<Arc<DescriptorSet>> {
+        let layout = pipeline
+            .layout()
+            .set_layouts()
+            .first()
+            .context("Raymarch pipeline has no descriptor set layout")?;
+        Ok(DescriptorSet::new(
+            context.descriptor_set_allocator.clone(),
+            layout.clone(),
+            [
+                WriteDescriptorSet::buffer(0, buffer.clone()),
+                WriteDescriptorSet::image_view_sampler(
+                    1,
+                    scene.environment.view.clone(),
+                    scene.environment.sampler.clone(),
+                ),
+            ],
+            [],
+        )?)
+    }
+
+    pub fn scene_descriptor_set_for(
+        &self,
+        context: &GpuContext,
+        scene: &SceneResources,
+        buffer: &Subbuffer<[u32]>,
+    ) -> Result<Arc<DescriptorSet>> {
+        Self::make_scene_descriptor_set(context, &self.pipeline, scene, buffer)
+    }
+
+    pub fn set_scene_descriptor_set(&mut self, descriptor_set: Arc<DescriptorSet>) {
+        self.scene_descriptor_set = descriptor_set;
     }
 
     pub fn record(

@@ -2,7 +2,7 @@ pub mod raymarching;
 pub mod svodag;
 pub mod vulkan;
 
-use glam::{vec3, Mat4, Vec3};
+use glam::{vec3, IVec3, Mat4, UVec3, Vec3};
 use std::collections::HashSet;
 use std::time::Instant;
 use svodag::{SvoNodeRef, Svodag};
@@ -178,9 +178,77 @@ impl Camera {
     }
 }
 
+/// Find the first occupied voxel and the empty voxel immediately before it.
+fn edit_target(
+    dag: &Svodag,
+    root: SvoNodeRef,
+    origin: Vec3,
+    direction: Vec3,
+    add: bool,
+) -> Option<UVec3> {
+    let width = 1_i32.checked_shl(dag.depth)?;
+    let mut entry = 0.0_f32;
+    let mut exit = f32::INFINITY;
+    for axis in 0..3 {
+        if direction[axis].abs() < f32::EPSILON {
+            if origin[axis] < 1.0 || origin[axis] >= 2.0 {
+                return None;
+            }
+        } else {
+            let a = (1.0 - origin[axis]) / direction[axis];
+            let b = (2.0 - origin[axis]) / direction[axis];
+            entry = entry.max(a.min(b));
+            exit = exit.min(a.max(b));
+        }
+    }
+    if entry > exit || exit < 0.0 {
+        return None;
+    }
+    let point = origin + direction * (entry + 1e-5 / width as f32);
+    let mut cell = ((point - Vec3::ONE) * width as f32).floor().as_ivec3();
+    cell = cell.clamp(IVec3::ZERO, IVec3::splat(width - 1));
+    let mut step = IVec3::ZERO;
+    let mut next = Vec3::splat(f32::INFINITY);
+    let mut delta = Vec3::splat(f32::INFINITY);
+    for axis in 0..3 {
+        if direction[axis].abs() >= f32::EPSILON {
+            step[axis] = if direction[axis] > 0.0 { 1 } else { -1 };
+            let boundary = 1.0 + (cell[axis] + i32::from(step[axis] > 0)) as f32 / width as f32;
+            next[axis] = (boundary - origin[axis]) / direction[axis];
+            delta[axis] = (1.0 / (width as f32 * direction[axis])).abs();
+        }
+    }
+    let mut previous = None;
+    while cell.cmpge(IVec3::ZERO).all() && cell.cmplt(IVec3::splat(width)).all() {
+        let position = cell.as_uvec3();
+        if dag.get(&root, position).is_some() {
+            return if add { previous } else { Some(position) };
+        }
+        previous = Some(position);
+        let t = next.min_element();
+        if t > exit || !t.is_finite() {
+            break;
+        }
+        for axis in 0..3 {
+            if next[axis] <= t {
+                cell[axis] += step[axis];
+                next[axis] += delta[axis];
+            }
+        }
+    }
+    if add {
+        previous
+    } else {
+        None
+    }
+}
+
 struct App {
     vulkan: Vulkan,
     svodag: Svodag,
+    empty_root: SvoNodeRef,
+    edits_since_collect: usize,
+    pending_sync: bool,
     objects: Vec<Object>,
     camera: Camera,
     frame_timer: FrameTimer,
@@ -191,11 +259,17 @@ impl App {
         event_loop: &EventLoop<()>,
         environment_path: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
-        let (svodag, root) = svodag::get_example_svodag(7);
+        let (mut svodag, root) = svodag::get_example_svodag(7);
+        let empty_root = svodag.empty_root();
+        let vulkan = Vulkan::new(event_loop, svodag.data(), 7, environment_path)?;
+        svodag.clear_dirty();
 
         Ok(Self {
-            vulkan: Vulkan::new(event_loop, svodag.data(), 7, environment_path)?,
+            vulkan,
             svodag,
+            empty_root,
+            edits_since_collect: 0,
+            pending_sync: false,
             objects: vec![Object {
                 root,
                 transform: Mat4::IDENTITY,
@@ -207,6 +281,26 @@ impl App {
 
     fn update_camera(&mut self, delta_seconds: f32) {
         self.camera.update(delta_seconds);
+    }
+
+    fn edit_voxel(&mut self, add: bool) {
+        let root = self.objects[0].root;
+        let (direction, _, _) = self.camera.basis();
+        if let Some(position) =
+            edit_target(&self.svodag, root, self.camera.position, direction, add)
+        {
+            let next = if add {
+                Some(self.svodag.insert(Some(&root), position, self.svodag.depth))
+            } else {
+                self.svodag.remove(Some(&root), position, self.svodag.depth)
+            };
+            let next = next.unwrap_or(self.empty_root);
+            if next != root {
+                self.objects[0].root = next;
+                self.pending_sync = true;
+                self.edits_since_collect += 1;
+            }
+        }
     }
 }
 
@@ -227,6 +321,15 @@ impl ApplicationHandler for App {
         }
 
         match event {
+            WindowEvent::KeyboardInput { event, .. }
+                if !egui_consumed && event.state == ElementState::Pressed && !event.repeat =>
+            {
+                match event.physical_key {
+                    PhysicalKey::Code(KeyCode::KeyZ) => self.edit_voxel(false),
+                    PhysicalKey::Code(KeyCode::KeyX) => self.edit_voxel(true),
+                    _ => {}
+                }
+            }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
@@ -235,6 +338,17 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let frame_timing = self.frame_timer.tick();
                 self.update_camera(frame_timing.delta_seconds);
+                if self.pending_sync {
+                    let dirty = self.svodag.dirty_ranges();
+                    self.vulkan.sync_svodag(self.svodag.data(), &dirty).unwrap();
+                    self.svodag.clear_dirty();
+                    self.pending_sync = false;
+                }
+                if self.edits_since_collect >= 128 {
+                    self.svodag
+                        .collect(&[self.objects[0].root, self.empty_root]);
+                    self.edits_since_collect = 0;
+                }
                 self.vulkan
                     .redraw(
                         &[self.objects[0].root],
@@ -263,4 +377,40 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::new(&event_loop, Some(&environment_path))?;
 
     Ok(event_loop.run_app(&mut app)?)
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+    use glam::uvec3;
+
+    #[test]
+    fn targeting_selects_hit_and_adjacent_empty_voxel() {
+        let mut dag = Svodag::new(2);
+        let root = dag.insert(None, uvec3(2, 1, 1), 2);
+        let origin = vec3(0.5, 1.375, 1.375);
+        assert_eq!(
+            edit_target(&dag, root, origin, Vec3::X, false),
+            Some(uvec3(2, 1, 1))
+        );
+        assert_eq!(
+            edit_target(&dag, root, origin, Vec3::X, true),
+            Some(uvec3(1, 1, 1))
+        );
+        assert_eq!(edit_target(&dag, root, origin, -Vec3::X, false), None);
+    }
+
+    #[test]
+    fn targeting_empty_scene_can_add_and_misses_outside_volume() {
+        let mut dag = Svodag::new(2);
+        let root = dag.empty_root();
+        assert_eq!(
+            edit_target(&dag, root, vec3(0.5, 1.375, 1.375), Vec3::X, true),
+            Some(uvec3(3, 1, 1))
+        );
+        assert_eq!(
+            edit_target(&dag, root, vec3(0.5, 2.5, 1.375), Vec3::X, true),
+            None
+        );
+    }
 }
