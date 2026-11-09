@@ -8,6 +8,5 @@ crate-type = ["rlib"]
 
 [dependencies]
 bytemuck = {version = "*", features = ["derive"]}
-glam = { version = "0.32.1", default-features = false, features = ["bytemuck"] }
+glam = { version = "=0.32.1", default-features = false, features = ["bytemuck"] }
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "3089687" }
-
