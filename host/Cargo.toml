@@ -9,7 +9,7 @@ egui = { version = "0.31.1", features = ["bytemuck"] }
 egui_winit_vulkano = { version = "0.28.0", default-features = false, features = ["wayland", "x11"] }
 glam = {version = "0.32", features = ["bytemuck"]}
 half = { version = "2.7", features = ["bytemuck"] }
-image = { version = "0.25.8", default-features = false, features = ["hdr"] }
+image = { version = "0.25.8", default-features = false, features = ["hdr", "png"] }
 vulkano = "0.35.2"
 vulkano-shaders = "0.35.0"
 winit = "0.30.0"

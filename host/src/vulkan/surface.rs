@@ -2,8 +2,10 @@ use super::context::GpuContext;
 use anyhow::{Context, Result};
 use egui_winit_vulkano::{Gui, GuiConfig};
 use std::sync::Arc;
+use vulkano::format::Format;
 use vulkano::image::view::ImageView;
-use vulkano::image::{Image, ImageUsage, SampleCount};
+use vulkano::image::{Image, ImageCreateInfo, ImageUsage, SampleCount};
+use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::swapchain::{Surface, Swapchain, SwapchainCreateInfo};
@@ -17,6 +19,8 @@ pub(super) struct SurfaceState {
     pub _surface: Arc<Surface>,
     pub swapchain: Arc<Swapchain>,
     pub render_pass: Arc<RenderPass>,
+    pub linear_image: Option<Arc<Image>>,
+    pub images: Vec<Arc<Image>>,
     pub framebuffers: Vec<Arc<Framebuffer>>,
     pub viewport: Viewport,
     pub gui: Gui,
@@ -24,8 +28,17 @@ pub(super) struct SurfaceState {
 }
 
 impl SurfaceState {
-    pub fn new(context: &GpuContext, event_loop: &ActiveEventLoop) -> Result<Self> {
-        let window = Arc::new(event_loop.create_window(Window::default_attributes())?);
+    pub fn new(
+        context: &GpuContext,
+        event_loop: &ActiveEventLoop,
+        requested_size: Option<PhysicalSize<u32>>,
+        linear_capture: bool,
+    ) -> Result<Self> {
+        let mut attributes = Window::default_attributes();
+        if let Some(size) = requested_size {
+            attributes = attributes.with_inner_size(size);
+        }
+        let window = Arc::new(event_loop.create_window(attributes)?);
         let surface = Surface::from_window(context.instance.clone(), window.clone())?;
         let window_size = window.inner_size();
         let physical_device = context.device.physical_device();
@@ -47,7 +60,8 @@ impl SurfaceState {
                 min_image_count: image_count,
                 image_format,
                 image_extent: window_size.into(),
-                image_usage: ImageUsage::COLOR_ATTACHMENT,
+                image_usage: ImageUsage::COLOR_ATTACHMENT
+                    | (surface_capabilities.supported_usage_flags & ImageUsage::TRANSFER_SRC),
                 composite_alpha: surface_capabilities
                     .supported_composite_alpha
                     .into_iter()
@@ -56,11 +70,21 @@ impl SurfaceState {
                 ..Default::default()
             },
         )?;
+        let linear_image = if linear_capture {
+            Some(make_linear_image(context, window_size)?)
+        } else {
+            None
+        };
+        let attachment_format = if linear_capture {
+            Format::R16G16B16A16_SFLOAT
+        } else {
+            swapchain.image_format()
+        };
         let render_pass = vulkano::ordered_passes_renderpass!(
             context.device.clone(),
             attachments: {
                 color: {
-                    format: swapchain.image_format(),
+                    format: attachment_format,
                     samples: SampleCount::Sample1,
                     load_op: Clear,
                     store_op: Store,
@@ -71,13 +95,19 @@ impl SurfaceState {
                 { color: [color], depth_stencil: {}, input: [] },
             ],
         )?;
-        let framebuffers = create_framebuffers(&images, &render_pass)?;
+        let attachment_images = linear_image
+            .as_ref()
+            .map(|image| vec![image.clone(); images.len()]);
+        let framebuffers = create_framebuffers(
+            attachment_images.as_deref().unwrap_or(&images),
+            &render_pass,
+        )?;
         let gui = Gui::new_with_subpass(
             event_loop,
             surface.clone(),
             context.queue.clone(),
             Subpass::from(render_pass.clone(), 1).context("Could not create egui subpass")?,
-            swapchain.image_format(),
+            attachment_format,
             GuiConfig {
                 allow_srgb_render_target: true,
                 ..GuiConfig::default()
@@ -94,6 +124,8 @@ impl SurfaceState {
             _surface: surface,
             swapchain,
             render_pass,
+            linear_image,
+            images,
             framebuffers,
             viewport,
             gui,
@@ -117,7 +149,7 @@ impl SurfaceState {
         self.recreate_swapchain = true;
     }
 
-    pub fn recreate_if_needed(&mut self) -> Result<()> {
+    pub fn recreate_if_needed(&mut self, context: &GpuContext) -> Result<()> {
         if !self.recreate_swapchain {
             return Ok(());
         }
@@ -128,12 +160,39 @@ impl SurfaceState {
             ..self.swapchain.create_info()
         })?;
         self.swapchain = swapchain;
-        self.framebuffers = create_framebuffers(&images, &self.render_pass)?;
+        if self.linear_image.is_some() {
+            self.linear_image = Some(make_linear_image(context, window_size)?);
+        }
+        let attachment_images = self
+            .linear_image
+            .as_ref()
+            .map(|image| vec![image.clone(); images.len()]);
+        self.framebuffers = create_framebuffers(
+            attachment_images.as_deref().unwrap_or(&images),
+            &self.render_pass,
+        )?;
+        self.images = images;
         self.viewport.extent = window_size.into();
         self.recreate_swapchain = false;
 
         Ok(())
     }
+}
+
+fn make_linear_image(context: &GpuContext, size: PhysicalSize<u32>) -> Result<Arc<Image>> {
+    Ok(Image::new(
+        context.memory_allocator.clone(),
+        ImageCreateInfo {
+            format: Format::R16G16B16A16_SFLOAT,
+            extent: [size.width, size.height, 1],
+            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )?)
 }
 
 fn create_framebuffers(

@@ -1,3 +1,4 @@
+mod capture;
 mod context;
 mod frame;
 mod passes;
@@ -5,6 +6,7 @@ mod resources;
 mod surface;
 
 use anyhow::{anyhow, Context, Result};
+use capture::FrameCapture;
 use context::GpuContext;
 use egui_winit_vulkano::egui;
 use frame::FrameResources;
@@ -24,6 +26,22 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 
 pub use frame::CameraView;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererMode {
+    Reference,
+    Albedo,
+}
+
+impl RendererMode {
+    fn shader_value(self) -> u32 {
+        match self {
+            Self::Reference => shader::integrator::REFERENCE,
+            Self::Albedo => shader::integrator::ALBEDO,
+        }
+    }
+}
+
 struct Material {
     albedo_srgb: [u8; 3],
     metallic: f32,
@@ -57,6 +75,9 @@ pub struct Vulkan {
     raymarch_pass: Option<RaymarchPass>,
     svodag_depth: u32,
     material: Material,
+    renderer: RendererMode,
+    samples_per_pixel: u32,
+    seed: u32,
 }
 
 impl Vulkan {
@@ -78,7 +99,19 @@ impl Vulkan {
             raymarch_pass: None,
             svodag_depth,
             material: Material::default(),
+            renderer: RendererMode::Reference,
+            samples_per_pixel: 16,
+            seed: 0,
         })
+    }
+
+    pub fn set_render_options(&mut self, mode: RendererMode, samples: u32) {
+        self.renderer = mode;
+        self.samples_per_pixel = samples.max(1);
+    }
+
+    pub fn set_render_seed(&mut self, seed: u32) {
+        self.seed = seed;
     }
 
     /// Uploads host edits after the previous frame has completed.
@@ -129,8 +162,12 @@ impl Vulkan {
         Ok(())
     }
 
-    pub fn resumed(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        let surface = SurfaceState::new(&self.context, event_loop)?;
+    pub fn resumed(&mut self, event_loop: &ActiveEventLoop, capture: Option<&Path>) -> Result<()> {
+        let size = capture
+            .is_some()
+            .then_some(winit::dpi::PhysicalSize::new(640, 480));
+        let linear = capture.is_some_and(capture::is_hdr);
+        let surface = SurfaceState::new(&self.context, event_loop, size, linear)?;
         let raymarch_pass = RaymarchPass::new(
             &self.context,
             &self.scene,
@@ -168,9 +205,11 @@ impl Vulkan {
         root_indices: &[SvoIndex],
         camera: CameraView,
         fps: f32,
-    ) -> Result<()> {
+        capture_path: Option<&Path>,
+    ) -> Result<bool> {
+        let show_gui = capture_path.is_none();
         let Some(&root_index) = root_indices.first() else {
-            return Ok(());
+            return Ok(false);
         };
         let surface = self.surface.as_mut().context("Renderer is not resumed")?;
         let raymarch_pass = self
@@ -179,19 +218,20 @@ impl Vulkan {
             .context("Raymarch pass is not initialized")?;
         let window_size = surface.window_size();
         if window_size.width == 0 || window_size.height == 0 {
-            return Ok(());
+            return Ok(false);
         }
 
-        surface.recreate_if_needed()?;
+        surface.recreate_if_needed(&self.context)?;
         let aspect_ratio = window_size.width as f32 / window_size.height as f32;
         let Some(camera_buffer_index) = self.frames.write_camera(camera, aspect_ratio) else {
-            return Ok(());
+            return Ok(false);
         };
 
         let gpu_timing = self.frames.timing_summary();
         let environment_source = self.scene.environment.source.clone();
         let environment_extent = self.scene.environment.extent;
-        surface.gui.immediate_ui(|gui| {
+        if show_gui {
+            surface.gui.immediate_ui(|gui| {
             let ctx = gui.context();
             egui::Window::new("Voxelf")
                 .default_pos([12.0, 12.0])
@@ -221,6 +261,11 @@ impl Vulkan {
                         ));
                     }
                     ui.separator();
+                    ui.heading("Renderer");
+                    ui.radio_value(&mut self.renderer, RendererMode::Reference, "Reference direct illumination");
+                    ui.radio_value(&mut self.renderer, RendererMode::Albedo, "Albedo debug");
+                    ui.add(egui::Slider::new(&mut self.samples_per_pixel, 1..=1024).text("Samples per pixel"));
+                    ui.separator();
                     ui.heading("Material");
                     ui.horizontal(|ui| {
                         ui.label("Albedo");
@@ -232,13 +277,14 @@ impl Vulkan {
                     ui.label("W/A/S/D move, Q/E rise/drop, left mouse drag looks around. Z removes / X adds voxel at view center.");
                 });
         });
+        }
 
         let (image_index, suboptimal, acquire_future) =
             match acquire_next_image(surface.swapchain.clone(), None).map_err(Validated::unwrap) {
                 Ok(result) => result,
                 Err(VulkanError::OutOfDate) => {
                     surface.mark_for_recreation();
-                    return Ok(());
+                    return Ok(false);
                 }
                 Err(error) => return Err(anyhow!(error)),
             };
@@ -267,33 +313,66 @@ impl Vulkan {
                 self.material.roughness,
                 surface.swapchain.image_format().numeric_format_color()
                     != Some(NumericFormat::SRGB),
+                self.renderer.shader_value(),
+                self.samples_per_pixel,
+                self.seed,
+                surface.linear_image.is_some(),
             ),
             self.frames.timestamp_query_pool.clone(),
         )?;
-        let gui_command_buffer = surface
-            .gui
-            .draw_on_subpass_image([window_size.width, window_size.height]);
-        builder.execute_commands(gui_command_buffer)?;
+        if show_gui {
+            let gui_command_buffer = surface
+                .gui
+                .draw_on_subpass_image([window_size.width, window_size.height]);
+            builder.execute_commands(gui_command_buffer)?;
+        }
         builder.end_render_pass(Default::default())?;
+        let capture = if capture_path.is_some() {
+            Some(FrameCapture::record(
+                &self.context,
+                &mut builder,
+                surface
+                    .linear_image
+                    .as_ref()
+                    .unwrap_or(&surface.images[image_index as usize])
+                    .clone(),
+            )?)
+        } else {
+            None
+        };
         let command_buffer = builder.build()?;
 
-        let future = acquire_future
-            .then_execute(self.context.queue.clone(), command_buffer)?
-            .then_signal_semaphore()
-            .then_swapchain_present(
-                self.context.queue.clone(),
-                SwapchainPresentInfo::swapchain_image_index(surface.swapchain.clone(), image_index),
-            )
-            .then_signal_fence_and_flush();
-        let future = match future.map_err(Validated::unwrap) {
-            Ok(future) => future,
-            Err(VulkanError::OutOfDate) => {
-                surface.mark_for_recreation();
-                return Ok(());
+        let executed = acquire_future.then_execute(self.context.queue.clone(), command_buffer)?;
+        if surface.linear_image.is_some() {
+            executed.then_signal_fence_and_flush()?.wait(None)?;
+        } else {
+            let future = executed
+                .then_signal_semaphore()
+                .then_swapchain_present(
+                    self.context.queue.clone(),
+                    SwapchainPresentInfo::swapchain_image_index(
+                        surface.swapchain.clone(),
+                        image_index,
+                    ),
+                )
+                .then_signal_fence_and_flush();
+            let future = match future.map_err(Validated::unwrap) {
+                Ok(future) => future,
+                Err(VulkanError::OutOfDate) => {
+                    surface.mark_for_recreation();
+                    return Ok(false);
+                }
+                Err(error) => return Err(anyhow!(error)),
+            };
+            future.wait(None)?;
+        }
+        if let (Some(capture), Some(path)) = (capture, capture_path) {
+            if capture::is_hdr(path) {
+                capture.save_hdr(path)?;
+            } else {
+                capture.save_png(path)?;
             }
-            Err(error) => return Err(anyhow!(error)),
-        };
-        future.wait(None)?;
+        }
 
         let mut timestamps = [0_u64; 2];
         let available = self.frames.timestamp_query_pool.get_results(
@@ -322,7 +401,7 @@ impl Vulkan {
                 .record_gpu_time(elapsed_ticks as f64 * period_ns as f64 / 1_000_000.0);
         }
 
-        Ok(())
+        Ok(true)
     }
 }
 
