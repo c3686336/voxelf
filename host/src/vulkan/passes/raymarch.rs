@@ -1,5 +1,5 @@
 use crate::vulkan::context::GpuContext;
-use crate::vulkan::frame::FrameResources;
+use crate::vulkan::frame::CameraBuffer;
 use crate::vulkan::resources::SceneResources;
 use anyhow::{Context, Result};
 use glam::{vec2, Vec2};
@@ -48,7 +48,7 @@ impl RaymarchPass {
     pub fn new(
         context: &GpuContext,
         scene: &SceneResources,
-        frames: &FrameResources,
+        camera_buffers: &[Subbuffer<[CameraBuffer]>],
         render_pass: Arc<RenderPass>,
     ) -> Result<Self> {
         let vertex_buffer = Buffer::from_iter(
@@ -132,8 +132,7 @@ impl RaymarchPass {
             .context("Raymarch pipeline has no frame descriptor set layout")?;
         let scene_descriptor_set =
             Self::make_scene_descriptor_set(context, &pipeline, scene, &scene.svodag_buffer)?;
-        let frame_descriptor_sets = frames
-            .camera_buffers()
+        let frame_descriptor_sets = camera_buffers
             .iter()
             .map(|camera_buffer| {
                 DescriptorSet::new(
@@ -199,7 +198,7 @@ impl RaymarchPass {
         viewport: Viewport,
         camera_buffer_index: usize,
         constants: shader::PushConsts,
-        timestamp_query_pool: Arc<QueryPool>,
+        timestamp_query_pool: Option<Arc<QueryPool>>,
     ) -> Result<()> {
         builder
             .begin_render_pass(
@@ -226,17 +225,14 @@ impl RaymarchPass {
             )?
             .push_constants(self.pipeline.layout().clone(), 0, constants)?;
         unsafe {
-            builder.write_timestamp(timestamp_query_pool.clone(), 0, PipelineStage::TopOfPipe)?;
+            if let Some(query_pool) = &timestamp_query_pool {
+                builder.write_timestamp(query_pool.clone(), 0, PipelineStage::TopOfPipe)?;
+            }
             builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0)?;
-            builder.write_timestamp(timestamp_query_pool, 1, PipelineStage::BottomOfPipe)?;
+            if let Some(query_pool) = timestamp_query_pool {
+                builder.write_timestamp(query_pool, 1, PipelineStage::BottomOfPipe)?;
+            }
         }
-        builder.next_subpass(
-            Default::default(),
-            SubpassBeginInfo {
-                contents: SubpassContents::SecondaryCommandBuffers,
-                ..Default::default()
-            },
-        )?;
 
         Ok(())
     }

@@ -1,14 +1,10 @@
-mod cli;
-
-pub mod raymarching;
-pub mod svodag;
-pub mod vulkan;
+use voxelf::render::CameraView;
+use voxelf::svodag::{self, SvoNodeRef, Svodag};
+use voxelf::vulkan::Vulkan;
 
 use glam::{vec3, IVec3, Mat4, UVec3, Vec3};
 use std::collections::HashSet;
 use std::time::Instant;
-use svodag::{SvoNodeRef, Svodag};
-use vulkan::{CameraView, Vulkan};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -253,8 +249,7 @@ struct App {
     pending_sync: bool,
     objects: Vec<Object>,
     camera: Camera,
-    capture: Option<std::path::PathBuf>,
-    capture_error: Option<anyhow::Error>,
+    render_error: Option<anyhow::Error>,
     frame_timer: FrameTimer,
 }
 
@@ -279,8 +274,7 @@ impl App {
                 transform: Mat4::IDENTITY,
             }],
             camera: Camera::new(),
-            capture: None,
-            capture_error: None,
+            render_error: None,
             frame_timer: FrameTimer::new(),
         })
     }
@@ -312,8 +306,8 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        if let Err(error) = self.vulkan.resumed(event_loop, self.capture.as_deref()) {
-            self.capture_error = Some(error);
+        if let Err(error) = self.vulkan.resumed(event_loop) {
+            self.render_error = Some(error);
             event_loop.exit();
         }
     }
@@ -362,15 +356,10 @@ impl ApplicationHandler for App {
                     &[self.objects[0].root],
                     self.camera.view(),
                     frame_timing.fps,
-                    self.capture.as_deref(),
                 ) {
-                    Ok(true) if self.capture.is_some() => {
-                        self.capture = None;
-                        event_loop.exit();
-                    }
                     Ok(_) => {}
                     Err(error) => {
-                        self.capture_error = Some(error);
+                        self.render_error = Some(error);
                         event_loop.exit();
                     }
                 }
@@ -385,24 +374,13 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> anyhow::Result<()> {
-    let options = cli::Options::parse(std::env::args_os().skip(1))?;
+    let environment = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../res/envmap.hdr");
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(&event_loop, Some(&options.environment))?;
-    app.capture = options.capture;
-    let mode = match options.renderer.unwrap_or(cli::Renderer::Reference) {
-        cli::Renderer::Reference => vulkan::RendererMode::Reference,
-        cli::Renderer::Albedo => vulkan::RendererMode::Albedo,
-    };
-    app.vulkan
-        .set_render_options(mode, options.samples.unwrap_or(16));
+    let mut app = App::new(&event_loop, Some(&environment))?;
     event_loop.run_app(&mut app)?;
-    if let Some(error) = app.capture_error {
+    if let Some(error) = app.render_error {
         return Err(error);
     }
-    anyhow::ensure!(
-        app.capture.is_none(),
-        "window closed before frame capture completed"
-    );
     Ok(())
 }
 

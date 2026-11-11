@@ -1,4 +1,5 @@
 use super::context::GpuContext;
+use crate::render::CameraView;
 use anyhow::Result;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -8,25 +9,6 @@ use vulkano::query::{QueryPool, QueryPoolCreateInfo, QueryType};
 
 const FRAME_BUFFER_COUNT: usize = 3;
 const GPU_TIMING_SAMPLE_COUNT: usize = 240;
-
-#[derive(Clone, Copy, Debug)]
-pub struct CameraView {
-    pub origin: [f32; 3],
-    pub direction: [f32; 3],
-    pub up: [f32; 3],
-    pub right: [f32; 3],
-}
-
-impl Default for CameraView {
-    fn default() -> Self {
-        Self {
-            origin: [1.5, 1.5, 3.0],
-            direction: [0.0, 0.0, -1.0],
-            up: [0.0, 1.0, 0.0],
-            right: [1.0, 0.0, 0.0],
-        }
-    }
-}
 
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
@@ -39,7 +21,7 @@ pub(super) struct CameraBuffer {
 }
 
 impl CameraBuffer {
-    fn from_view(view: CameraView, aspect_ratio: f32) -> Self {
+    pub(super) fn from_view(view: CameraView, aspect_ratio: f32) -> Self {
         Self {
             origin: extend_vec3(view.origin),
             direction: extend_vec3(view.direction),

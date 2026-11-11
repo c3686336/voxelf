@@ -1,17 +1,13 @@
 * Running
 
-Run with the supplied =res/envmap.hdr= environment:
+Run the interactive window with the supplied =res/envmap.hdr= environment:
 
 #+begin_src sh
 cargo run --release
 #+end_src
 
-Override it by passing another Radiance HDR equirectangular environment map as
-the first argument:
-
-#+begin_src sh
-cargo run --release -- path/to/environment.hdr
-#+end_src
+There is no command-line parser. The window and validation capture are separate
+executables; configure the environment in their source or through the library API.
 
 The default reference renderer estimates linear, scene-referred radiance
 from the HDR environment using cosine-weighted Monte Carlo hemisphere samples,
@@ -24,23 +20,62 @@ interactive display uses Reinhard tone mapping and sRGB encoding.
 Traversal uses an eight-entry stack and treats overflow as a miss; the supplied
 depth-7 scene fits that limit.
 
-* Capturing a frame
+* Validation captures
 
-Run a single frame, save linear radiance as Radiance RGBE HDR, and exit:
+Run the headless validation recipe in =host/src/bin/capture.rs=:
 
 #+begin_src sh
-cargo run --release -- --capture /tmp/voxelf.hdr --renderer reference --samples 128
+cargo run --release --bin capture
 #+end_src
 
-The HDR capture renders to an offscreen RGBA16F image without tone mapping,
-sRGB encoding, or the GUI; RGBE output adds its own quantization. Use a =.png=
-output path instead for a tone-mapped, display-encoded 8-bit preview.
-=--renderer= accepts =reference= or =albedo=; =--samples= accepts 1–1024.
-An optional HDR environment path may be supplied as above. Capture uses a fixed
-sampling seed and requests a 640×480 physical window; the output contains the
-actual extent, which the window manager may override. Capture requires a window
-system. PNG capture also requires swapchain transfer-source support. Pixel-exact
-results can vary across GPU drivers.
+This writes =reference.exr= at exactly 640×480, averaging 64 frames with 16
+samples per pixel per frame. Edit the recipe's constants and =RenderSettings=
+for another capture. No window system, swapchain, presentation, or GUI is used.
+Capture and interactive rendering share scene resources and the raymarch pass,
+not their rendering loops.
+
+Captures contain top-to-bottom, row-major linear RGB radiance. The Vulkan backend
+uses one RGBA32F offscreen target and reusable readback buffer. Frames use
+deterministic seeds =seed + frame_index= (wrapping at =u32::MAX=), and are averaged
+in linear space with f64 sums before conversion to f32. Repeating identical
+settings and seeds is deterministic on the same device; pixel-exact results can
+vary across GPU drivers. Frame count must be nonzero; samples per pixel must be
+within 1–1024.
+
+Storage has one format: lossless RGB32F OpenEXR, without tone mapping, sRGB
+encoding, or half-float/RGBE quantization. =RadianceImage::save= and =load= always
+use OpenEXR regardless of the filename extension; use =.exr= for image viewers.
+Inspect it with an EXR-capable viewer (for example Krita or ImageMagick). Viewer
+exposure/display transforms do not alter the saved radiance. The environment
+input may still be a Radiance HDR file.
+
+Tests can call the library directly without launching either executable:
+
+#+begin_src rust
+use voxelf::{
+    capture::{capture, RadianceImage},
+    render::RenderSettings,
+    svodag::get_example_svodag,
+    vulkan::VulkanCapture,
+};
+
+let (scene, root) = get_example_svodag(7);
+// None selects the small generated environment; pass Some(path) for an HDR map.
+let mut backend = VulkanCapture::new(
+    scene.data(), scene.depth, root, None, [320, 240],
+    RenderSettings { samples_per_pixel: 32, ..Default::default() },
+)?;
+let image = capture(&mut backend, 128, 0)?;
+image.save("reference.exr")?;
+let loaded = RadianceImage::load("reference.exr")?;
+// loaded.extent() and loaded.pixels() expose linear RGB values for comparisons.
+#+end_src
+
+To add another backend, implement =capture::CaptureBackend=: report a fixed
+extent and fill the supplied RGB pixel slice for each frame seed. The shared
+capture routine handles averaging and storage; no Vulkan or window types are
+part of that trait. Camera, renderer mode, and linear material parameters live
+in =render=; =RenderSettings= fixes them for a =VulkanCapture= instance.
 
 * SVoDAG
 

@@ -1,71 +1,122 @@
 use super::context::GpuContext;
-use anyhow::{bail, Context, Result};
+use super::frame::CameraBuffer;
+use super::passes::RaymarchPass;
+use super::resources::SceneResources;
+use crate::capture::CaptureBackend;
+use crate::render::RenderSettings;
+use anyhow::{ensure, Context, Result};
+use shader::SvoIndex;
 use std::path::Path;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CopyImageToBufferInfo, PrimaryAutoCommandBuffer,
+    AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo,
 };
 use vulkano::format::Format;
-use vulkano::image::{Image, ImageUsage};
+use vulkano::image::view::ImageView;
+use vulkano::image::{Image, ImageCreateInfo, ImageUsage, SampleCount};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
 use vulkano::memory::MemoryPropertyFlags;
+use vulkano::pipeline::graphics::viewport::Viewport;
+use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo};
+use vulkano::sync::{self, GpuFuture};
 
-pub(super) fn is_hdr(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("hdr"))
-}
-
-#[derive(Clone, Copy)]
-enum PixelFormat {
-    Rgba8,
-    Bgra8,
-    Rgba16Float,
-}
-
-impl PixelFormat {
-    fn bytes_per_pixel(self) -> u64 {
-        match self {
-            Self::Rgba8 | Self::Bgra8 => 4,
-            Self::Rgba16Float => 8,
-        }
-    }
-}
-
-/// A recorded swapchain readback. Keep this alive until the submission has completed.
-pub(super) struct FrameCapture {
-    pixels: Subbuffer<[u8]>,
+/// A reusable offscreen renderer with fixed scene and render settings.
+///
+/// No surface, swapchain, window or GUI is created. Readback preserves the
+/// shader's linear radiance without display encoding or tone mapping.
+pub struct VulkanCapture {
+    context: GpuContext,
+    _scene: SceneResources,
+    _camera_buffer: Subbuffer<[CameraBuffer]>,
+    raymarch_pass: RaymarchPass,
+    image: Arc<Image>,
+    framebuffer: Arc<Framebuffer>,
+    staging: Subbuffer<[f32]>,
     extent: [u32; 2],
-    format: PixelFormat,
+    pixel_count: usize,
+    constants: shader::PushConsts,
 }
 
-impl FrameCapture {
-    /// Record after the render pass and before presentation. The builder manages the image
-    /// layout transitions; the acquire future must be chained into its submission.
-    pub fn record(
-        context: &GpuContext,
-        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-        image: Arc<Image>,
+impl VulkanCapture {
+    pub fn new(
+        words: &[u32],
+        depth: u32,
+        root: SvoIndex,
+        environment: Option<&Path>,
+        extent: [u32; 2],
+        settings: RenderSettings,
     ) -> Result<Self> {
-        if !image.usage().contains(ImageUsage::TRANSFER_SRC) {
-            bail!("Frame capture is unavailable: the surface does not support swapchain TRANSFER_SRC usage");
-        }
-        let format = match image.format() {
-            Format::B8G8R8A8_SRGB | Format::B8G8R8A8_UNORM => PixelFormat::Bgra8,
-            Format::R8G8B8A8_SRGB | Format::R8G8B8A8_UNORM => PixelFormat::Rgba8,
-            Format::R16G16B16A16_SFLOAT => PixelFormat::Rgba16Float,
-            format => bail!("Frame capture does not support swapchain format {format:?}"),
-        };
-        let [width, height, depth] = image.extent();
-        if width == 0 || height == 0 || depth != 1 {
-            bail!("Invalid swapchain image extent: {width}x{height}x{depth}");
-        }
-        let len = u64::from(width)
-            .checked_mul(u64::from(height))
-            .and_then(|size| size.checked_mul(format.bytes_per_pixel()))
-            .context("Frame capture image size overflow")?;
-        let pixels = Buffer::new_slice::<u8>(
+        ensure!(
+            extent[0] > 0 && extent[1] > 0,
+            "Capture extent must be nonzero"
+        );
+        ensure!(
+            (1..=1024).contains(&settings.samples_per_pixel),
+            "Samples per pixel must be within 1..=1024"
+        );
+        let pixel_count = u64::from(extent[0]) * u64::from(extent[1]);
+        let channel_count = pixel_count
+            .checked_mul(4)
+            .context("Capture image size overflow")?;
+        let pixel_count = usize::try_from(pixel_count).context("Capture image size overflow")?;
+        let context = GpuContext::new_headless()?;
+        let scene = SceneResources::new(&context, words, environment)?;
+        let camera_buffer = Buffer::from_iter(
+            context.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            [CameraBuffer::from_view(
+                settings.camera,
+                extent[0] as f32 / extent[1] as f32,
+            )],
+        )?;
+        let image = Image::new(
+            context.memory_allocator.clone(),
+            ImageCreateInfo {
+                format: Format::R32G32B32A32_SFLOAT,
+                extent: [extent[0], extent[1], 1],
+                usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+        )?;
+        let render_pass = vulkano::single_pass_renderpass!(
+            context.device.clone(),
+            attachments: {
+                color: {
+                    format: Format::R32G32B32A32_SFLOAT,
+                    samples: SampleCount::Sample1,
+                    load_op: Clear,
+                    store_op: Store,
+                },
+            },
+            pass: { color: [color], depth_stencil: {} },
+        )?;
+        let framebuffer = Framebuffer::new(
+            render_pass.clone(),
+            FramebufferCreateInfo {
+                attachments: vec![ImageView::new_default(image.clone())?],
+                ..Default::default()
+            },
+        )?;
+        let raymarch_pass = RaymarchPass::new(
+            &context,
+            &scene,
+            std::slice::from_ref(&camera_buffer),
+            render_pass,
+        )?;
+        let staging = Buffer::new_slice::<f32>(
             context.memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST,
@@ -79,81 +130,82 @@ impl FrameCapture {
                 },
                 ..Default::default()
             },
-            len,
+            channel_count,
         )?;
-        builder.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, pixels.clone()))?;
+        let constants = shader::PushConsts::new(
+            depth,
+            root,
+            settings.material.albedo,
+            settings.material.metallic,
+            settings.material.roughness,
+            false,
+            settings.renderer.shader_value(),
+            settings.samples_per_pixel,
+            0,
+            true,
+        );
+
         Ok(Self {
-            pixels,
-            extent: [width, height],
-            format,
+            context,
+            _scene: scene,
+            _camera_buffer: camera_buffer,
+            raymarch_pass,
+            image,
+            framebuffer,
+            staging,
+            extent,
+            pixel_count,
+            constants,
         })
     }
+}
 
-    /// Save untone-mapped linear radiance from an RGBA16F offscreen image.
-    pub fn save_hdr(self, path: &Path) -> Result<()> {
-        if !matches!(self.format, PixelFormat::Rgba16Float) {
-            bail!("Linear HDR capture requires an RGBA16F render target");
-        }
-        let pixels = self
-            .pixels
-            .read()
-            .context("Mapping linear frame capture buffer")?;
-        let rgb: Vec<image::Rgb<f32>> = pixels
-            .chunks_exact(8)
-            .map(|pixel| {
-                let channel = |offset| {
-                    half::f16::from_bits(u16::from_ne_bytes([pixel[offset], pixel[offset + 1]]))
-                        .to_f32()
-                };
-                image::Rgb([channel(0), channel(2), channel(4)])
-            })
-            .collect();
-        let file = std::fs::File::create(path)
-            .with_context(|| format!("Creating HDR capture {}", path.display()))?;
-        let mut writer = std::io::BufWriter::new(file);
-        image::codecs::hdr::HdrEncoder::new(&mut writer)
-            .encode(&rgb, self.extent[0] as usize, self.extent[1] as usize)
-            .with_context(|| format!("Writing linear HDR capture {}", path.display()))?;
-        std::io::Write::flush(&mut writer)
-            .with_context(|| format!("Flushing linear HDR capture {}", path.display()))?;
-        Ok(())
+impl CaptureBackend for VulkanCapture {
+    fn extent(&self) -> [u32; 2] {
+        self.extent
     }
 
-    /// Write after the submission's fence has completed. Vulkan's tightly packed copy
-    /// starts at image coordinate (0, 0), which is the top row for this renderer.
-    /// Both sRGB attachments and the renderer's explicitly sRGB-encoded UNORM output
-    /// contain display-encoded bytes; do not apply the transfer function again.
-    pub fn save_png(self, path: &Path) -> Result<()> {
-        let pixels = self.pixels.read().context("Mapping frame capture buffer")?;
-        let mut converted = Vec::new();
-        let rgba = match self.format {
-            PixelFormat::Rgba8 => &pixels[..],
-            PixelFormat::Bgra8 => {
-                converted.extend_from_slice(&pixels);
-                for pixel in converted.chunks_exact_mut(4) {
-                    pixel.swap(0, 2);
-                }
-                converted.as_slice()
-            }
-            PixelFormat::Rgba16Float => {
-                converted.reserve(pixels.len() / 2);
-                for bytes in pixels.chunks_exact(2) {
-                    let value =
-                        half::f16::from_bits(u16::from_ne_bytes([bytes[0], bytes[1]])).to_f32();
-                    converted.push((value.clamp(0.0, 1.0) * 255.0).round() as u8);
-                }
-                converted.as_slice()
-            }
-        };
-        image::save_buffer_with_format(
-            path,
-            rgba,
-            self.extent[0],
-            self.extent[1],
-            image::ColorType::Rgba8,
-            image::ImageFormat::Png,
-        )
-        .with_context(|| format!("Writing frame capture PNG to {}", path.display()))?;
+    fn render_frame(&mut self, seed: u32, pixels: &mut [[f32; 3]]) -> Result<()> {
+        ensure!(
+            pixels.len() == self.pixel_count,
+            "Capture pixel buffer has the wrong length"
+        );
+        let mut builder = AutoCommandBufferBuilder::primary(
+            self.context.command_buffer_allocator.clone(),
+            self.context.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )?;
+        let mut constants = self.constants;
+        constants.seed = seed;
+        self.raymarch_pass.record(
+            &mut builder,
+            self.framebuffer.clone(),
+            Viewport {
+                offset: [0.0, 0.0],
+                extent: [self.extent[0] as f32, self.extent[1] as f32],
+                depth_range: 0.0..=1.0,
+            },
+            0,
+            constants,
+            None,
+        )?;
+        builder.end_render_pass(Default::default())?;
+        builder.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
+            self.image.clone(),
+            self.staging.clone(),
+        ))?;
+        let command_buffer = builder.build()?;
+        sync::now(self.context.device.clone())
+            .then_execute(self.context.queue.clone(), command_buffer)?
+            .then_signal_fence_and_flush()?
+            .wait(None)?;
+
+        // A tightly packed Vulkan copy starts at image coordinate (0, 0),
+        // the top row for this renderer. Alpha is not part of the capture API.
+        let mapped = self.staging.read().context("Mapping capture radiance")?;
+        for (rgb, rgba) in pixels.iter_mut().zip(mapped.chunks_exact(4)) {
+            rgb.copy_from_slice(&rgba[..3]);
+        }
         Ok(())
     }
 }

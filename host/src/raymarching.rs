@@ -1,4 +1,4 @@
-use crate::{svodag::SvoNodeRef, Svodag};
+use crate::svodag::{SvoNodeRef, Svodag};
 use glam::*;
 
 #[derive(Clone, Copy, PartialEq, Debug)]

@@ -7,7 +7,7 @@ use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags,
 };
-use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
+use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::swapchain::Surface;
 use vulkano::VulkanLibrary;
@@ -24,8 +24,15 @@ pub struct GpuContext {
 
 impl GpuContext {
     pub fn new(event_loop: &EventLoop<()>) -> Result<Self> {
+        Self::create(Surface::required_extensions(event_loop)?, true)
+    }
+
+    pub fn new_headless() -> Result<Self> {
+        Self::create(InstanceExtensions::empty(), false)
+    }
+
+    fn create(required_extensions: InstanceExtensions, swapchain: bool) -> Result<Self> {
         let library = VulkanLibrary::new()?;
-        let required_extensions = Surface::required_extensions(event_loop)?;
         let instance = Instance::new(
             library,
             InstanceCreateInfo {
@@ -60,7 +67,7 @@ impl GpuContext {
             physical_device,
             DeviceCreateInfo {
                 enabled_extensions: DeviceExtensions {
-                    khr_swapchain: true,
+                    khr_swapchain: swapchain,
                     khr_vulkan_memory_model: true,
                     ..DeviceExtensions::empty()
                 },
