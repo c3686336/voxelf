@@ -9,7 +9,7 @@ pub mod brdf;
 pub mod integrator;
 pub mod svodag;
 
-use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
+use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, uvec2, vec2, vec3, vec4};
 use spirv_std::image::Image2d;
 use spirv_std::Sampler;
 #[allow(unused_imports)]
@@ -452,6 +452,7 @@ pub fn main_fs(
         + x.x * camera_right * film_width
         + x.y * camera_up * film_height;
     let ray_direction = film_point.normalize();
+    let pixel = uvec2(frag_coord.x as u32, frag_coord.y as u32);
 
     let hit = trace(
         camera_origin,
@@ -464,7 +465,7 @@ pub fn main_fs(
         integrator::shade(
             hit,
             -ray_direction,
-            vec2(frag_coord.x, frag_coord.y),
+            pixel,
             constants,
             svodag,
             environment,

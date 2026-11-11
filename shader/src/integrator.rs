@@ -1,5 +1,5 @@
 use core::f32::consts::{PI, TAU};
-use spirv_std::glam::{Vec2, Vec3, vec2, vec3};
+use spirv_std::glam::{UVec2, Vec2, Vec3, vec2, vec3};
 use spirv_std::image::Image2d;
 use spirv_std::Sampler;
 #[allow(unused_imports)]
@@ -46,10 +46,11 @@ pub fn environment_radiance(environment: &Image2d, sampler: &Sampler, direction:
 }
 
 /// Select an integrator independently of intersection and display conversion.
+/// `pixel` is the zero-based framebuffer coordinate, independent of film UV.
 pub fn shade(
     hit: Hit,
     view: Vec3,
-    pixel: Vec2,
+    pixel: UVec2,
     constants: &RenderParams,
     svodag: SvodagView,
     environment: &Image2d,
@@ -64,7 +65,7 @@ pub fn shade(
 fn reference(
     hit: Hit,
     view: Vec3,
-    pixel: Vec2,
+    pixel: UVec2,
     constants: &RenderParams,
     svodag: SvodagView,
     environment: &Image2d,
@@ -72,7 +73,7 @@ fn reference(
 ) -> Vec3 {
     let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
     let mut state = hash(
-        constants.seed ^ hash(pixel.x as u32) ^ hash((pixel.y as u32).wrapping_add(0x68bc_21eb)),
+        constants.seed ^ hash(pixel.x) ^ hash(pixel.y.wrapping_add(0x68bc_21eb)),
     );
     let epsilon = (-(constants.max_depth.min(23) as f32)).exp2() * 0.001;
     let mut radiance = Vec3::ZERO;
