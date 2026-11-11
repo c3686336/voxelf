@@ -112,5 +112,7 @@ The renderer uploads changed slot ranges before drawing with the new root. When
 the GPU buffer is too small, it is replaced with a larger buffer and the scene is
 uploaded again. Rendering currently waits for each frame to finish, so edits,
 collection, buffer writes and replacement occur with no GPU frame in flight.
+=Queue::write_buffer= stages uploads on the CPU; the next =Queue::submit=
+executes the transfers before the frame's draw commands.
 The application runs a synchronous collection after every 128 effective edits;
 large scenes may pause while it traces the retained roots.

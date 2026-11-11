@@ -62,6 +62,9 @@ impl SceneResources {
     }
 
     /// Returns whether a replacement buffer requires the scene bind group to be rebuilt.
+    ///
+    /// `Queue::write_buffer` copies the words into CPU-side staging memory.
+    /// The next `Queue::submit` schedules the GPU copies before its command buffers.
     pub fn sync(
         &mut self,
         context: &GpuContext,
