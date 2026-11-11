@@ -14,6 +14,9 @@ components; the first build compiles the shader toolchain. Texture and sampler
 bindings are separate, render parameters use a uniform buffer, and traversal
 bit operations use 32-bit integers for WGSL compatibility. Lighting, sampling
 and the serialized scene layout are unchanged.
+Host settings and shader uniforms share the same =RendererMode= enum.
+=#[repr(u32)]= fixes its representation; =NoUninit= permits uploads without
+requiring every bit pattern to be a valid enum variant.
 
 The GUI reports GPU draw timing when the adapter supports timestamp queries.
 Set =WGPU_BACKEND=vulkan= or =WGPU_BACKEND=gl= to select a native backend

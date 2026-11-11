@@ -5,10 +5,7 @@ use spirv_std::Sampler;
 #[allow(unused_imports)]
 use spirv_std::num_traits::Float;
 
-use crate::{Hit, RenderParams, SvodagView, brdf, trace};
-
-pub const REFERENCE: u32 = 0;
-pub const ALBEDO: u32 = 1;
+use crate::{Hit, RenderParams, RendererMode, SvodagView, brdf, trace};
 
 fn hash(mut value: u32) -> u32 {
     value ^= value >> 16;
@@ -59,7 +56,7 @@ pub fn shade(
     sampler: &Sampler,
 ) -> Vec3 {
     let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
-    if constants.renderer == ALBEDO {
+    if constants.renderer == RendererMode::Albedo {
         return albedo;
     }
     reference(hit, view, pixel, constants, svodag, environment, sampler)

@@ -233,7 +233,7 @@ impl WgpuRenderer {
                 self.material.metallic,
                 self.material.roughness,
                 !state.config.format.is_srgb(),
-                self.renderer.shader_value(),
+                self.renderer,
                 self.samples_per_pixel,
                 self.seed,
                 false,

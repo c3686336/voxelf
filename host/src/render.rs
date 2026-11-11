@@ -18,20 +18,7 @@ impl Default for CameraView {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RendererMode {
-    Reference,
-    Albedo,
-}
-
-impl RendererMode {
-    pub(crate) fn shader_value(self) -> u32 {
-        match self {
-            Self::Reference => shader::integrator::REFERENCE,
-            Self::Albedo => shader::integrator::ALBEDO,
-        }
-    }
-}
+pub use shader::RendererMode;
 
 /// Linear scene-referred material parameters, without display encoding.
 #[derive(Clone, Copy, Debug)]

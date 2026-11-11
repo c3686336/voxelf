@@ -102,7 +102,7 @@ impl WgpuCapture {
             settings.material.metallic,
             settings.material.roughness,
             false,
-            settings.renderer.shader_value(),
+            settings.renderer,
             settings.samples_per_pixel,
             0,
             true,

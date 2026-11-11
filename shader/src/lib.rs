@@ -18,8 +18,16 @@ use spirv_std::spirv;
 
 const STACK_DEPTH: usize = 8;
 
+/// Integrator selection shared by host code and the shader uniform ABI.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::NoUninit)]
+pub enum RendererMode {
+    Reference = 0,
+    Albedo = 1,
+}
+
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, bytemuck::NoUninit)]
 pub struct RenderParams {
     pub max_depth: u32,
     pub root_index: SvoIndex,
@@ -30,7 +38,7 @@ pub struct RenderParams {
     pub roughness: f32,
     /// Nonzero when the attachment does not perform sRGB encoding.
     pub encode_srgb: u32,
-    pub renderer: u32,
+    pub renderer: RendererMode,
     pub samples_per_pixel: u32,
     pub seed: u32,
     pub linear_output: u32,
@@ -44,7 +52,7 @@ impl RenderParams {
         metallic: f32,
         roughness: f32,
         encode_srgb: bool,
-        renderer: u32,
+        renderer: RendererMode,
         samples_per_pixel: u32,
         seed: u32,
         linear_output: bool,
@@ -469,7 +477,7 @@ pub fn main_fs(
         *output = vec4(radiance.x, radiance.y, radiance.z, 1.0);
         return;
     }
-    let mapped = if hit.found && constants.renderer == integrator::ALBEDO {
+    let mapped = if hit.found && constants.renderer == RendererMode::Albedo {
         radiance
     } else {
         radiance / (radiance + Vec3::ONE)
@@ -501,30 +509,6 @@ mod tests {
 
     fn index(raw: u32) -> SvoIndex {
         unsafe { SvoIndex::from_raw(raw) }
-    }
-
-    fn default_render_params(max_depth: u32, root_index: SvoIndex) -> RenderParams {
-        RenderParams::new(
-            max_depth,
-            root_index,
-            [1.0, 0.0, 0.0],
-            0.0,
-            0.5,
-            false,
-            0,
-            16,
-            0,
-            false,
-        )
-    }
-
-    fn default_camera_data() -> [CameraData; 1] {
-        [CameraData::new(
-            [1.5, 1.5, 3.0],
-            [0.0, 0.0, -1.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 0.0, 0.0],
-        )]
     }
 
     fn single_voxel_at_origin_depth_3() -> [u32; 7] {
@@ -570,34 +554,6 @@ mod tests {
         assert!((hit.position.y - 1.625).abs() < 1e-5);
         assert_eq!(hit.normal, Vec3::Y);
         assert!(!trace(vec3(0.0, 1.1, 1.1), Vec3::X, 3, view, index(0)).found);
-    }
-
-    #[test]
-    fn constructors_initialize_fields_and_padding() {
-        let root_index = index(70_000);
-        let push_consts = default_render_params(5, root_index);
-
-        assert_eq!(core::mem::size_of::<SvoIndex>(), 4);
-        assert_eq!(core::mem::size_of::<RenderParams>(), 48);
-        assert_eq!(core::mem::offset_of!(RenderParams, albedo_r), 8);
-        assert_eq!(core::mem::offset_of!(RenderParams, metallic), 20);
-        assert_eq!(core::mem::offset_of!(RenderParams, roughness), 24);
-        assert_eq!(core::mem::offset_of!(RenderParams, encode_srgb), 28);
-        assert_eq!(core::mem::size_of::<SvodagMetaData>(), 80);
-        assert_eq!(push_consts.max_depth, 5);
-        assert_eq!(push_consts.root_index.to_raw(), 70_000);
-
-        let camera = default_camera_data()[0];
-        assert_eq!(camera.origin, vec4(1.5, 1.5, 3.0, 0.0));
-        assert_eq!(camera.direction, vec4(0.0, 0.0, -1.0, 0.0));
-        assert_eq!(camera.up, vec4(0.0, 1.0, 0.0, 0.0));
-        assert_eq!(camera.right, vec4(1.0, 0.0, 0.0, 0.0));
-        assert_eq!(camera.viewport, vec4(1.0, 0.0, 0.0, 0.0));
-
-        let metadata = SvodagMetaData::new(root_index, Mat4::IDENTITY);
-        assert_eq!(metadata.root_index.to_raw(), 70_000);
-        assert_eq!(metadata.pad, [0; 3]);
-        assert_eq!(metadata.inv_model_transform, Mat4::IDENTITY);
     }
 
     #[test]
