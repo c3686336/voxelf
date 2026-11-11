@@ -6,6 +6,7 @@ extern crate spirv_std;
 extern crate std;
 
 pub mod brdf;
+pub mod color;
 pub mod integrator;
 pub mod rng;
 pub mod svodag;
@@ -468,12 +469,20 @@ pub fn main_fs(
         *output = vec4(radiance.x, radiance.y, radiance.z, 1.0);
         return;
     }
-    let color = tonemap::display_color(
-        radiance,
-        constants.renderer,
-        hit.found,
-        constants.encode_srgb != 0,
-    );
+    let mapped = if hit.found && constants.renderer == RendererMode::Albedo {
+        radiance
+    } else {
+        tonemap::reinhard(radiance)
+    };
+    let color = if constants.encode_srgb != 0 {
+        vec3(
+            color::linear_to_srgb(mapped.x),
+            color::linear_to_srgb(mapped.y),
+            color::linear_to_srgb(mapped.z),
+        )
+    } else {
+        mapped
+    };
     *output = vec4(color.x, color.y, color.z, 1.0);
 }
 

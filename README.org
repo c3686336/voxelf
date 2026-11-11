@@ -39,9 +39,10 @@ advances a wrapping seed after each completed frame; increasing the sample count
 reduces per-frame noise. There is no temporal accumulation yet. This is
 single-bounce environment lighting, not indirect global illumination. The
 interactive display uses Reinhard tone mapping and sRGB encoding.
-Display policy and tone-mapping operators live in =shader::tonemap=, separate
-from the fragment entry point. Albedo hits bypass tone mapping; the sky does
-not. Linear validation captures bypass all display transforms.
+The fragment entry point owns display policy: albedo hits bypass tone mapping,
+the sky does not, and linear validation captures bypass all display transforms.
+=shader::tonemap= contains only tone-mapping operators; =shader::color= contains
+the sRGB transfer function. Neither module decides when a transform is bypassed.
 
 Sampling uses =shader::rng::sample_2d= with
 [[https://github.com/DEShawResearch/random123][Random123's Threefry2x32-20]].
