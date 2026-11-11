@@ -9,6 +9,7 @@ pub mod brdf;
 pub mod integrator;
 pub mod rng;
 pub mod svodag;
+pub mod tonemap;
 
 use spirv_std::glam::{BVec3, Mat4, Vec2, Vec3, Vec4, uvec2, vec2, vec3, vec4};
 use spirv_std::image::Image2d;
@@ -412,14 +413,6 @@ pub fn main_vs(
     *uv_output = uv;
 }
 
-fn linear_to_srgb(value: f32) -> f32 {
-    if value <= 0.003_130_8 {
-        12.92 * value
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    }
-}
-
 #[unsafe(no_mangle)]
 #[spirv(fragment)]
 pub fn main_fs(
@@ -475,20 +468,12 @@ pub fn main_fs(
         *output = vec4(radiance.x, radiance.y, radiance.z, 1.0);
         return;
     }
-    let mapped = if hit.found && constants.renderer == RendererMode::Albedo {
-        radiance
-    } else {
-        radiance / (radiance + Vec3::ONE)
-    };
-    let color = if constants.encode_srgb != 0 {
-        vec3(
-            linear_to_srgb(mapped.x),
-            linear_to_srgb(mapped.y),
-            linear_to_srgb(mapped.z),
-        )
-    } else {
-        mapped
-    };
+    let color = tonemap::display_color(
+        radiance,
+        constants.renderer,
+        hit.found,
+        constants.encode_srgb != 0,
+    );
     *output = vec4(color.x, color.y, color.z, 1.0);
 }
 
@@ -496,14 +481,6 @@ pub fn main_fs(
 mod tests {
     use super::*;
     use std::vec::Vec;
-
-    #[test]
-    fn srgb_encoding_matches_reference_values() {
-        assert_eq!(linear_to_srgb(0.0), 0.0);
-        assert!((linear_to_srgb(0.003_130_8) - 0.040_449_936).abs() < 0.000_001);
-        assert!((linear_to_srgb(0.215_86) - 0.501_96).abs() < 0.000_1);
-        assert!((linear_to_srgb(1.0) - 1.0).abs() < 0.000_001);
-    }
 
     fn index(raw: u32) -> SvoIndex {
         unsafe { SvoIndex::from_raw(raw) }
