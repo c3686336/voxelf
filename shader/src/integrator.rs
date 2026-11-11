@@ -55,11 +55,10 @@ pub fn shade(
     environment: &Image2d,
     sampler: &Sampler,
 ) -> Vec3 {
-    let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
-    if constants.renderer == RendererMode::Albedo {
-        return albedo;
+    match constants.renderer {
+        RendererMode::Reference => reference(hit, view, pixel, constants, svodag, environment, sampler),
+        RendererMode::Albedo => vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b),
     }
-    reference(hit, view, pixel, constants, svodag, environment, sampler)
 }
 
 fn reference(
