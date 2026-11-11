@@ -10,7 +10,7 @@ pub mod integrator;
 pub mod rng;
 pub mod svodag;
 
-use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, uvec2, vec2, vec3, vec4};
+use spirv_std::glam::{BVec3, Mat4, Vec2, Vec3, Vec4, uvec2, vec2, vec3, vec4};
 use spirv_std::image::Image2d;
 use spirv_std::Sampler;
 #[allow(unused_imports)]
@@ -184,6 +184,13 @@ impl Hit {
     }
 }
 
+fn cube_face_normal(axes: Vec3, distance: f32, signs: Vec3) -> Vec3 {
+    // Select exactly one axis, retaining X/Y/Z priority at edges and corners.
+    let x = axes.x == distance;
+    let y = !x & (axes.y == distance);
+    Vec3::select(BVec3::new(x, y, !(x | y)), signs, Vec3::ZERO)
+}
+
 fn cube_hit(origin: Vec3, direction: Vec3, min: Vec3, size: f32) -> Hit {
     let max = min + Vec3::splat(size);
     let parallel = direction.cmpeq(Vec3::ZERO);
@@ -194,20 +201,9 @@ fn cube_hit(origin: Vec3, direction: Vec3, min: Vec3, size: f32) -> Hit {
     let far_axes = Vec3::select(parallel, Vec3::splat(f32::MAX), a.max(b));
     let near = near_axes.max_element();
     let far = far_axes.min_element();
-    let near_normal = if near_axes.x == near {
-        vec3(if direction.x > 0.0 { -1.0 } else { 1.0 }, 0.0, 0.0)
-    } else if near_axes.y == near {
-        vec3(0.0, if direction.y > 0.0 { -1.0 } else { 1.0 }, 0.0)
-    } else {
-        vec3(0.0, 0.0, if direction.z > 0.0 { -1.0 } else { 1.0 })
-    };
-    let far_normal = if far_axes.x == far {
-        vec3(if direction.x > 0.0 { 1.0 } else { -1.0 }, 0.0, 0.0)
-    } else if far_axes.y == far {
-        vec3(0.0, if direction.y > 0.0 { 1.0 } else { -1.0 }, 0.0)
-    } else {
-        vec3(0.0, 0.0, if direction.z > 0.0 { 1.0 } else { -1.0 })
-    };
+    let near_signs = Vec3::select(direction.cmpgt(Vec3::ZERO), -Vec3::ONE, Vec3::ONE);
+    let near_normal = cube_face_normal(near_axes, near, near_signs);
+    let far_normal = cube_face_normal(far_axes, far, -near_signs);
     let (t, normal) = if near >= 0.0 {
         (near, near_normal)
     } else {
@@ -556,6 +552,25 @@ mod tests {
         assert!((hit.position.y - 1.625).abs() < 1e-5);
         assert_eq!(hit.normal, Vec3::Y);
         assert!(!trace(vec3(0.0, 1.1, 1.1), Vec3::X, 3, view, index(0)).found);
+    }
+
+    #[test]
+    fn cube_normals_preserve_edge_corner_priority_and_inside_exit_signs() {
+        for (origin, direction, expected) in [
+            (vec3(-1.0, -1.0, 0.5), vec3(1.0, 1.0, 0.0), -Vec3::X),
+            (vec3(0.5, -1.0, -1.0), vec3(0.0, 1.0, 1.0), -Vec3::Y),
+            (-Vec3::ONE, Vec3::ONE, -Vec3::X),
+            (Vec3::splat(2.0), -Vec3::ONE, Vec3::X),
+            (Vec3::splat(0.5), Vec3::ONE, Vec3::X),
+            (Vec3::splat(0.5), vec3(0.0, -1.0, -1.0), -Vec3::Y),
+            (vec3(-1.0, 0.5, 0.5), vec3(1.0, -0.0, 0.0), -Vec3::X),
+        ] {
+            assert_eq!(
+                cube_hit(origin, direction, Vec3::ZERO, 1.0).normal,
+                expected,
+                "origin={origin:?}, direction={direction:?}"
+            );
+        }
     }
 
     #[test]

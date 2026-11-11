@@ -49,6 +49,8 @@ The noise sequence differs from the former stateful hash RNG.
 
 Traversal uses an eight-entry stack and treats overflow as a miss; the supplied
 depth-7 scene fits that limit.
+Face-normal selection uses masks, with X then Y then Z priority for edge and
+corner ties; rays starting inside a voxel use the outward exit-face normal.
 
 * Validation captures
 
