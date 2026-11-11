@@ -12,8 +12,9 @@ executables; configure the environment in their source or through the library AP
 The default reference renderer estimates linear, scene-referred radiance
 from the HDR environment using cosine-weighted Monte Carlo hemisphere samples,
 shadow rays, and the metallic-roughness GGX BRDF. The GUI selects this renderer
-or an albedo debug view and controls samples per pixel and material. Sampling
-uses a fixed seed per pixel; increasing the sample count reduces noise. This is
+or an albedo debug view and controls samples per pixel and material. The window
+advances a wrapping seed after each completed frame; increasing the sample count
+reduces per-frame noise. There is no temporal accumulation yet. This is
 single-bounce environment lighting, not indirect global illumination. The
 interactive display uses Reinhard tone mapping and sRGB encoding.
 

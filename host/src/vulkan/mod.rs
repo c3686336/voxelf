@@ -63,6 +63,7 @@ pub struct Vulkan {
     material: Material,
     renderer: RendererMode,
     samples_per_pixel: u32,
+    seed: u32,
 }
 
 impl Vulkan {
@@ -86,6 +87,7 @@ impl Vulkan {
             material: Material::default(),
             renderer: RendererMode::Reference,
             samples_per_pixel: 16,
+            seed: 0,
         })
     }
 
@@ -282,7 +284,7 @@ impl Vulkan {
                     != Some(NumericFormat::SRGB),
                 self.renderer.shader_value(),
                 self.samples_per_pixel,
-                0,
+                self.seed,
                 false,
             ),
             Some(self.frames.timestamp_query_pool.clone()),
@@ -318,6 +320,7 @@ impl Vulkan {
             Err(error) => return Err(anyhow!(error)),
         };
         future.wait(None)?;
+        self.seed = self.seed.wrapping_add(1);
 
         let mut timestamps = [0_u64; 2];
         let available = self.frames.timestamp_query_pool.get_results(
