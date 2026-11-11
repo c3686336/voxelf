@@ -2,16 +2,19 @@
 name = "voxelf"
 version = "0.1.0"
 edition = "2021"
+default-run = "voxelf"
 
 [dependencies]
 anyhow = "*"
+bytemuck = "1"
 egui = { version = "0.31.1", features = ["bytemuck"] }
-egui_winit_vulkano = { version = "0.28.0", default-features = false, features = ["wayland", "x11"] }
+egui-wgpu = "0.31.1"
+egui-winit = { version = "0.31.1", default-features = false, features = ["wayland", "x11", "clipboard", "links"] }
 glam = {version = "0.32", features = ["bytemuck"]}
 half = { version = "2.7", features = ["bytemuck"] }
-image = { version = "0.25.8", default-features = false, features = ["hdr"] }
-vulkano = "0.35.2"
-vulkano-shaders = "0.35.0"
+image = { version = "0.25.8", default-features = false, features = ["hdr", "exr"] }
+wgpu = "24"
+pollster = "0.4"
 winit = "0.30.0"
 shader = { path = "../shader" }
 
@@ -20,4 +23,4 @@ proptest = "1.10.0"
 rand = "0.10.0"
 
 [build-dependencies]
-spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "3089687" }
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", tag = "v0.11.0" }

@@ -98,7 +98,7 @@ impl SvodagView<'_> {
         node.words[0] = self.get_data()[index.to_raw() as usize];
         let count = self.get_childmask(index).count_ones() as usize;
         for i in 0..count {
-            node.words[i + 1] = self.get_child(index, i as u8).to_raw();
+            node.words[i + 1] = self.get_child(index, i as u32).to_raw();
         }
         node
     }

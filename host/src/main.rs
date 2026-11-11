@@ -1,12 +1,10 @@
-pub mod raymarching;
-pub mod svodag;
-pub mod vulkan;
+use voxelf::render::CameraView;
+use voxelf::svodag::{self, SvoNodeRef, Svodag};
+use voxelf::gpu::WgpuRenderer;
 
 use glam::{vec3, IVec3, Mat4, UVec3, Vec3};
 use std::collections::HashSet;
 use std::time::Instant;
-use svodag::{SvoNodeRef, Svodag};
-use vulkan::{CameraView, Vulkan};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -244,13 +242,14 @@ fn edit_target(
 }
 
 struct App {
-    vulkan: Vulkan,
+    renderer: WgpuRenderer,
     svodag: Svodag,
     empty_root: SvoNodeRef,
     edits_since_collect: usize,
     pending_sync: bool,
     objects: Vec<Object>,
     camera: Camera,
+    render_error: Option<anyhow::Error>,
     frame_timer: FrameTimer,
 }
 
@@ -261,11 +260,11 @@ impl App {
     ) -> anyhow::Result<Self> {
         let (mut svodag, root) = svodag::get_example_svodag(7);
         let empty_root = svodag.empty_root();
-        let vulkan = Vulkan::new(event_loop, svodag.data(), 7, environment_path)?;
+        let renderer = WgpuRenderer::new(event_loop, svodag.data(), 7, environment_path)?;
         svodag.clear_dirty();
 
         Ok(Self {
-            vulkan,
+            renderer,
             svodag,
             empty_root,
             edits_since_collect: 0,
@@ -275,6 +274,7 @@ impl App {
                 transform: Mat4::IDENTITY,
             }],
             camera: Camera::new(),
+            render_error: None,
             frame_timer: FrameTimer::new(),
         })
     }
@@ -306,7 +306,10 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        self.vulkan.resumed(event_loop).unwrap();
+        if let Err(error) = self.renderer.resumed(event_loop) {
+            self.render_error = Some(error);
+            event_loop.exit();
+        }
     }
 
     fn window_event(
@@ -315,7 +318,10 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        let egui_consumed = self.vulkan.window_event(&event);
+        if self.render_error.is_some() {
+            return;
+        }
+        let egui_consumed = self.renderer.window_event(&event);
         if !egui_consumed || self.camera.is_mouse_look_active() {
             self.camera.handle_window_event(&event);
         }
@@ -333,14 +339,14 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::Resized(_size) => self.vulkan.resized().unwrap(),
-            WindowEvent::ScaleFactorChanged { .. } => self.vulkan.resized().unwrap(),
+            WindowEvent::Resized(_size) => self.renderer.resized().unwrap(),
+            WindowEvent::ScaleFactorChanged { .. } => self.renderer.resized().unwrap(),
             WindowEvent::RedrawRequested => {
                 let frame_timing = self.frame_timer.tick();
                 self.update_camera(frame_timing.delta_seconds);
                 if self.pending_sync {
                     let dirty = self.svodag.dirty_ranges();
-                    self.vulkan.sync_svodag(self.svodag.data(), &dirty).unwrap();
+                    self.renderer.sync_svodag(self.svodag.data(), &dirty).unwrap();
                     self.svodag.clear_dirty();
                     self.pending_sync = false;
                 }
@@ -349,34 +355,36 @@ impl ApplicationHandler for App {
                         .collect(&[self.objects[0].root, self.empty_root]);
                     self.edits_since_collect = 0;
                 }
-                self.vulkan
-                    .redraw(
-                        &[self.objects[0].root],
-                        self.camera.view(),
-                        frame_timing.fps,
-                    )
-                    .unwrap()
+                match self.renderer.redraw(
+                    &[self.objects[0].root],
+                    self.camera.view(),
+                    frame_timing.fps,
+                ) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.render_error = Some(error);
+                        event_loop.exit();
+                    }
+                }
             }
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &event_loop::ActiveEventLoop) {
-        self.vulkan.request_redraw();
+        self.renderer.request_redraw();
     }
 }
 
 fn main() -> anyhow::Result<()> {
+    let environment = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../res/envmap.hdr");
     let event_loop = EventLoop::new()?;
-    let environment_path = std::env::args_os()
-        .nth(1)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../res/envmap.hdr")
-        });
-    let mut app = App::new(&event_loop, Some(&environment_path))?;
-
-    Ok(event_loop.run_app(&mut app)?)
+    let mut app = App::new(&event_loop, Some(&environment))?;
+    event_loop.run_app(&mut app)?;
+    if let Some(error) = app.render_error {
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

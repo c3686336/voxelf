@@ -1,4 +1,4 @@
-use crate::{svodag::SvoNodeRef, Svodag};
+use crate::svodag::{SvoNodeRef, Svodag};
 use glam::*;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -82,7 +82,7 @@ pub fn raymarch(origin: Vec3, direction: Vec3, svodag: &Svodag, root_ref: &SvoNo
         // PUSH
         let child_mask = view.get_childmask(parent);
         if (child_mask >> (idx ^ mask)) & 1 == 1 && tmin <= tmax_current_cube {
-            let child_index = ((child_mask >> (idx ^ mask)).count_ones() - 1) as u8;
+            let child_index = (child_mask >> (idx ^ mask)).count_ones() - 1;
             let child = view.get_child(parent, child_index);
 
             if view.is_leaf(child) {

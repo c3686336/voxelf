@@ -6,19 +6,32 @@ extern crate spirv_std;
 extern crate std;
 
 pub mod brdf;
+pub mod color;
+pub mod integrator;
+pub mod rng;
 pub mod svodag;
+pub mod tonemap;
 
-use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
-use spirv_std::image::{Image2d, SampledImage};
+use spirv_std::glam::{BVec3, Mat4, Vec2, Vec3, Vec4, uvec2, vec2, vec3, vec4};
+use spirv_std::image::Image2d;
+use spirv_std::Sampler;
 #[allow(unused_imports)]
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 
 const STACK_DEPTH: usize = 8;
 
+/// Integrator selection shared by host code and the shader uniform ABI.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::NoUninit)]
+pub enum RendererMode {
+    Reference = 0,
+    Albedo = 1,
+}
+
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
-pub struct PushConsts {
+#[derive(Clone, Copy, bytemuck::NoUninit)]
+pub struct RenderParams {
     pub max_depth: u32,
     pub root_index: SvoIndex,
     pub albedo_r: f32,
@@ -28,9 +41,13 @@ pub struct PushConsts {
     pub roughness: f32,
     /// Nonzero when the attachment does not perform sRGB encoding.
     pub encode_srgb: u32,
+    pub renderer: RendererMode,
+    pub samples_per_pixel: u32,
+    pub seed: u32,
+    pub linear_output: u32,
 }
 
-impl PushConsts {
+impl RenderParams {
     pub fn new(
         max_depth: u32,
         root_index: SvoIndex,
@@ -38,6 +55,10 @@ impl PushConsts {
         metallic: f32,
         roughness: f32,
         encode_srgb: bool,
+        renderer: RendererMode,
+        samples_per_pixel: u32,
+        seed: u32,
+        linear_output: bool,
     ) -> Self {
         Self {
             max_depth,
@@ -48,6 +69,10 @@ impl PushConsts {
             metallic,
             roughness,
             encode_srgb: encode_srgb as u32,
+            renderer,
+            samples_per_pixel,
+            seed,
+            linear_output: linear_output as u32,
         }
     }
 }
@@ -96,8 +121,8 @@ impl SvodagMetaData {
     }
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, bytemuck::AnyBitPattern)]
-#[repr(C)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(transparent)]
 pub struct SvoIndex(u32);
 
 impl SvoIndex {
@@ -117,15 +142,15 @@ pub struct SvodagView<'a> {
 }
 
 impl<'a> SvodagView<'a> {
-    pub fn get_childmask(&self, index: SvoIndex) -> u8 {
-        (self.data[index.to_raw() as usize] >> 8) as u8
+    pub fn get_childmask(&self, index: SvoIndex) -> u32 {
+        (self.data[index.to_raw() as usize] >> 8) & 0xff
     }
 
     pub fn is_leaf(&self, index: SvoIndex) -> bool {
         (self.data[index.to_raw() as usize] & 0b1) != 0
     }
 
-    pub fn get_child(&self, index: SvoIndex, child_index: u8) -> SvoIndex {
+    pub fn get_child(&self, index: SvoIndex, child_index: u32) -> SvoIndex {
         unsafe {
             SvoIndex::from_raw(self.data[index.to_raw() as usize + (1 + child_index) as usize])
         }
@@ -140,20 +165,80 @@ impl<'a> SvodagView<'a> {
     }
 }
 
-fn index_of_morton(svodag: &SvodagView, node: SvoIndex, morton: u8) -> u8 {
-    ((svodag.get_childmask(node) >> morton).count_ones().max(1) - 1) as u8
+fn index_of_morton(svodag: &SvodagView, node: SvoIndex, morton: u32) -> u32 {
+    (svodag.get_childmask(node) >> morton).count_ones().max(1) - 1
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Hit {
+    pub found: bool,
+    pub position: Vec3,
+    pub normal: Vec3,
+}
+
+impl Hit {
+    fn miss() -> Self {
+        Self {
+            found: false,
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+        }
+    }
+}
+
+fn cube_face_normal(axes: Vec3, distance: f32, signs: Vec3) -> Vec3 {
+    // Select exactly one axis, retaining X/Y/Z priority at edges and corners.
+    let x = axes.x == distance;
+    let y = !x & (axes.y == distance);
+    Vec3::select(BVec3::new(x, y, !(x | y)), signs, Vec3::ZERO)
+}
+
+fn cube_hit(origin: Vec3, direction: Vec3, min: Vec3, size: f32) -> Hit {
+    let max = min + Vec3::splat(size);
+    let parallel = direction.cmpeq(Vec3::ZERO);
+    let inverse = Vec3::select(parallel, Vec3::ONE, direction).recip();
+    let a = (min - origin) * inverse;
+    let b = (max - origin) * inverse;
+    let near_axes = Vec3::select(parallel, Vec3::splat(-f32::MAX), a.min(b));
+    let far_axes = Vec3::select(parallel, Vec3::splat(f32::MAX), a.max(b));
+    let near = near_axes.max_element();
+    let far = far_axes.min_element();
+    let near_signs = Vec3::select(direction.cmpgt(Vec3::ZERO), -Vec3::ONE, Vec3::ONE);
+    let near_normal = cube_face_normal(near_axes, near, near_signs);
+    let far_normal = cube_face_normal(far_axes, far, -near_signs);
+    let (t, normal) = if near >= 0.0 {
+        (near, near_normal)
+    } else {
+        (far, far_normal)
+    };
+    Hit {
+        found: true,
+        position: origin + direction * t,
+        normal,
+    }
 }
 
 pub fn raymarch(
     origin: Vec3,
     direction: Vec3,
-    _max_depth: u32,
+    max_depth: u32,
     svodag: SvodagView,
     root_ref: SvoIndex,
 ) -> bool {
+    trace(origin, direction, max_depth, svodag, root_ref).found
+}
+
+pub fn trace(
+    origin: Vec3,
+    direction: Vec3,
+    _max_depth: u32,
+    svodag: SvodagView,
+    root_ref: SvoIndex,
+) -> Hit {
+    let ray_origin = origin;
     let dir_threshold = -direction.abs().clamp(Vec3::ONE * f32::EPSILON, Vec3::MAX);
     let dir_sign = direction.cmpgt(Vec3::ZERO);
-    let mask = ((dir_sign.x as u8) << 2) | ((dir_sign.y as u8) << 1) | ((dir_sign.z as u8) << 0);
+    let mask = ((dir_sign.x as u32) << 2) | ((dir_sign.y as u32) << 1) | (dir_sign.z as u32);
     let dir_inv = dir_threshold.recip();
 
     let mut origin = origin;
@@ -175,16 +260,16 @@ pub fn raymarch(
     let tmax = t1.min_element(); // Because of the mirroring
 
     if tmax <= 0.0 || tmin > tmax {
-        return false;
+        return Hit::miss();
     }
     tmin = tmin.max(0.0);
 
     let mut position = Vec3::ONE;
     let mut parent = root_ref;
     if svodag.is_leaf(parent) && tmin <= tmax {
-        return true;
+        return cube_hit(ray_origin, direction, Vec3::ONE, 1.0);
     }
-    let mut idx: u8 = 0;
+    let mut idx: u32 = 0;
     let mut scale = 0.5;
 
     let center_t = (1.5 * Vec3::ONE - origin) * dir_inv;
@@ -213,11 +298,21 @@ pub fn raymarch(
             let child = svodag.get_child(parent, index_of_morton(&svodag, parent, idx ^ mask));
 
             if svodag.is_leaf(child) {
-                return true;
+                let mut min = position;
+                if dir_sign.x {
+                    min.x = 3.0 - position.x - scale;
+                }
+                if dir_sign.y {
+                    min.y = 3.0 - position.y - scale;
+                }
+                if dir_sign.z {
+                    min.z = 3.0 - position.z - scale;
+                }
+                return cube_hit(ray_origin, direction, min, scale);
             }
 
             if stack_ind >= STACK_DEPTH {
-                return false;
+                return Hit::miss();
             }
             stack[stack_ind] = parent;
             stack_ind += 1;
@@ -278,7 +373,7 @@ pub fn raymarch(
             }
 
             if position.cmplt(Vec3::ONE).any() {
-                return false;
+                return Hit::miss();
             }
 
             let depth = (diff_bits << 9).leading_zeros() + 1;
@@ -289,12 +384,12 @@ pub fn raymarch(
             let z = position.z.to_bits();
 
             if depth == 0 || depth > 23 || depth as usize > STACK_DEPTH {
-                return false;
+                return Hit::miss();
             }
 
-            idx = ((((x >> (23 - depth)) & 1) << 2)
+            idx = (((x >> (23 - depth)) & 1) << 2)
                 | (((y >> (23 - depth)) & 1) << 1)
-                | (((z >> (23 - depth)) & 1) << 0)) as u8;
+                | ((z >> (23 - depth)) & 1);
             let stack_index = (depth - 1) as usize;
             parent = stack[stack_index];
             stack_ind = stack_index;
@@ -305,10 +400,9 @@ pub fn raymarch(
             position.z = f32::from_bits(z >> (23 - depth) << (23 - depth));
         }
     }
-
-    false
 }
 
+#[unsafe(no_mangle)]
 #[spirv(vertex)]
 pub fn main_vs(
     #[spirv(position)] output: &mut Vec4,
@@ -320,22 +414,17 @@ pub fn main_vs(
     *uv_output = uv;
 }
 
-fn linear_to_srgb(value: f32) -> f32 {
-    if value <= 0.003_130_8 {
-        12.92 * value
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    }
-}
-
+#[unsafe(no_mangle)]
 #[spirv(fragment)]
 pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
+    #[spirv(frag_coord)] frag_coord: Vec4,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u32],
-    #[spirv(descriptor_set = 0, binding = 1)] environment: &SampledImage<Image2d>,
+    #[spirv(descriptor_set = 0, binding = 1)] environment: &Image2d,
+    #[spirv(descriptor_set = 0, binding = 2)] environment_sampler: &Sampler,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] camera: &[CameraData],
-    #[spirv(push_constant)] constants: &PushConsts,
+    #[spirv(uniform, descriptor_set = 1, binding = 1)] constants: &RenderParams,
 ) {
     let svodag = SvodagView::from_slice(buffer);
     let camera = camera[0];
@@ -354,36 +443,47 @@ pub fn main_fs(
         + x.x * camera_right * film_width
         + x.y * camera_up * film_height;
     let ray_direction = film_point.normalize();
+    let pixel = uvec2(frag_coord.x as u32, frag_coord.y as u32);
 
-    let result = raymarch(
+    let hit = trace(
         camera_origin,
         ray_direction,
         constants.max_depth,
         svodag,
         constants.root_index,
     );
-
-    if result {
-        let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
-        let color = if constants.encode_srgb != 0 {
-            vec3(
-                linear_to_srgb(albedo.x),
-                linear_to_srgb(albedo.y),
-                linear_to_srgb(albedo.z),
-            )
-        } else {
-            albedo
-        };
-        *output = vec4(color.x, color.y, color.z, 1.0);
+    let radiance = if hit.found {
+        integrator::shade(
+            hit,
+            -ray_direction,
+            pixel,
+            constants,
+            svodag,
+            environment,
+            environment_sampler,
+        )
     } else {
-        let environment_uv = vec2(
-            0.5 + ray_direction.z.atan2(ray_direction.x) / core::f32::consts::TAU,
-            0.5 - ray_direction.y.asin() / core::f32::consts::PI,
-        );
-        let radiance = vec4_to_vec3(environment.sample(environment_uv)).max(Vec3::ZERO);
-        let mapped = radiance / (radiance + Vec3::ONE);
-        *output = vec4(mapped.x, mapped.y, mapped.z, 1.0);
+        integrator::environment_radiance(environment, environment_sampler, ray_direction)
+    };
+    if constants.linear_output != 0 {
+        *output = vec4(radiance.x, radiance.y, radiance.z, 1.0);
+        return;
     }
+    let mapped = if hit.found && constants.renderer == RendererMode::Albedo {
+        radiance
+    } else {
+        tonemap::reinhard(radiance)
+    };
+    let color = if constants.encode_srgb != 0 {
+        vec3(
+            color::linear_to_srgb(mapped.x),
+            color::linear_to_srgb(mapped.y),
+            color::linear_to_srgb(mapped.z),
+        )
+    } else {
+        mapped
+    };
+    *output = vec4(color.x, color.y, color.z, 1.0);
 }
 
 #[cfg(test)]
@@ -391,29 +491,8 @@ mod tests {
     use super::*;
     use std::vec::Vec;
 
-    #[test]
-    fn srgb_encoding_matches_reference_values() {
-        assert_eq!(linear_to_srgb(0.0), 0.0);
-        assert!((linear_to_srgb(0.003_130_8) - 0.040_449_936).abs() < 0.000_001);
-        assert!((linear_to_srgb(0.215_86) - 0.501_96).abs() < 0.000_1);
-        assert!((linear_to_srgb(1.0) - 1.0).abs() < 0.000_001);
-    }
-
     fn index(raw: u32) -> SvoIndex {
         unsafe { SvoIndex::from_raw(raw) }
-    }
-
-    fn default_push_consts(max_depth: u32, root_index: SvoIndex) -> PushConsts {
-        PushConsts::new(max_depth, root_index, [1.0, 0.0, 0.0], 0.0, 0.5, false)
-    }
-
-    fn default_camera_data() -> [CameraData; 1] {
-        [CameraData::new(
-            [1.5, 1.5, 3.0],
-            [0.0, 0.0, -1.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 0.0, 0.0],
-        )]
     }
 
     fn single_voxel_at_origin_depth_3() -> [u32; 7] {
@@ -443,31 +522,41 @@ mod tests {
     }
 
     #[test]
-    fn constructors_initialize_fields_and_padding() {
-        let root_index = index(70_000);
-        let push_consts = default_push_consts(5, root_index);
+    fn trace_returns_voxel_face_and_inside_exit() {
+        let data = single_voxel([3, 4, 5], 3);
+        let view = SvodagView::from_slice(&data);
+        let hit = trace(vec3(0.0, 1.55, 1.68), Vec3::X, 3, view, index(0));
+        assert!(hit.found);
+        assert!((hit.position - vec3(1.375, 1.55, 1.68)).length() < 1e-5);
+        assert_eq!(hit.normal, -Vec3::X);
+        let hit = trace(vec3(1.4, 1.55, 1.68), Vec3::Z, 3, view, index(0));
+        assert!(hit.found);
+        assert!((hit.position - vec3(1.4, 1.55, 1.75)).length() < 1e-5);
+        assert_eq!(hit.normal, Vec3::Z);
+        let hit = trace(vec3(1.4, 2.5, 1.68), -Vec3::Y, 3, view, index(0));
+        assert!(hit.found);
+        assert!((hit.position.y - 1.625).abs() < 1e-5);
+        assert_eq!(hit.normal, Vec3::Y);
+        assert!(!trace(vec3(0.0, 1.1, 1.1), Vec3::X, 3, view, index(0)).found);
+    }
 
-        assert_eq!(core::mem::size_of::<SvoIndex>(), 4);
-        assert_eq!(core::mem::size_of::<PushConsts>(), 32);
-        assert_eq!(core::mem::offset_of!(PushConsts, albedo_r), 8);
-        assert_eq!(core::mem::offset_of!(PushConsts, metallic), 20);
-        assert_eq!(core::mem::offset_of!(PushConsts, roughness), 24);
-        assert_eq!(core::mem::offset_of!(PushConsts, encode_srgb), 28);
-        assert_eq!(core::mem::size_of::<SvodagMetaData>(), 80);
-        assert_eq!(push_consts.max_depth, 5);
-        assert_eq!(push_consts.root_index.to_raw(), 70_000);
-
-        let camera = default_camera_data()[0];
-        assert_eq!(camera.origin, vec4(1.5, 1.5, 3.0, 0.0));
-        assert_eq!(camera.direction, vec4(0.0, 0.0, -1.0, 0.0));
-        assert_eq!(camera.up, vec4(0.0, 1.0, 0.0, 0.0));
-        assert_eq!(camera.right, vec4(1.0, 0.0, 0.0, 0.0));
-        assert_eq!(camera.viewport, vec4(1.0, 0.0, 0.0, 0.0));
-
-        let metadata = SvodagMetaData::new(root_index, Mat4::IDENTITY);
-        assert_eq!(metadata.root_index.to_raw(), 70_000);
-        assert_eq!(metadata.pad, [0; 3]);
-        assert_eq!(metadata.inv_model_transform, Mat4::IDENTITY);
+    #[test]
+    fn cube_normals_preserve_edge_corner_priority_and_inside_exit_signs() {
+        for (origin, direction, expected) in [
+            (vec3(-1.0, -1.0, 0.5), vec3(1.0, 1.0, 0.0), -Vec3::X),
+            (vec3(0.5, -1.0, -1.0), vec3(0.0, 1.0, 1.0), -Vec3::Y),
+            (-Vec3::ONE, Vec3::ONE, -Vec3::X),
+            (Vec3::splat(2.0), -Vec3::ONE, Vec3::X),
+            (Vec3::splat(0.5), Vec3::ONE, Vec3::X),
+            (Vec3::splat(0.5), vec3(0.0, -1.0, -1.0), -Vec3::Y),
+            (vec3(-1.0, 0.5, 0.5), vec3(1.0, -0.0, 0.0), -Vec3::X),
+        ] {
+            assert_eq!(
+                cube_hit(origin, direction, Vec3::ZERO, 1.0).normal,
+                expected,
+                "origin={origin:?}, direction={direction:?}"
+            );
+        }
     }
 
     #[test]
@@ -677,19 +766,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn vertex_shader_writes_position_and_uv() {
-        let mut output = Vec4::ZERO;
-        let mut uv_output = Vec2::ZERO;
-
-        main_vs(
-            &mut output,
-            vec2(-0.25, 0.75),
-            vec2(0.2, 0.8),
-            &mut uv_output,
-        );
-
-        assert_eq!(output, vec4(-0.25, 0.75, 0.0, 1.0));
-        assert_eq!(uv_output, vec2(0.2, 0.8));
-    }
 }

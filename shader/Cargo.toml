@@ -9,4 +9,7 @@ crate-type = ["rlib"]
 [dependencies]
 bytemuck = {version = "*", features = ["derive"]}
 glam = { version = "=0.32.1", default-features = false, features = ["bytemuck"] }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "3089687" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", tag = "v0.11.0", default-features = false, features = ["glam_0_32"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("spirv"))'] }
