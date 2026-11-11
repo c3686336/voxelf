@@ -1,10 +1,11 @@
 use core::f32::consts::{PI, TAU};
 use spirv_std::glam::{Vec2, Vec3, vec2, vec3};
-use spirv_std::image::{Image2d, SampledImage};
+use spirv_std::image::Image2d;
+use spirv_std::Sampler;
 #[allow(unused_imports)]
 use spirv_std::num_traits::Float;
 
-use crate::{Hit, PushConsts, SvodagView, brdf, trace};
+use crate::{Hit, RenderParams, SvodagView, brdf, trace};
 
 pub const REFERENCE: u32 = 0;
 pub const ALBEDO: u32 = 1;
@@ -38,12 +39,12 @@ fn sample_hemisphere(normal: Vec3, u: Vec2) -> (Vec3, f32) {
     (direction, z / PI)
 }
 
-pub fn environment_radiance(environment: &SampledImage<Image2d>, direction: Vec3) -> Vec3 {
+pub fn environment_radiance(environment: &Image2d, sampler: &Sampler, direction: Vec3) -> Vec3 {
     let uv = vec2(
         0.5 + direction.z.atan2(direction.x) / TAU,
         0.5 - direction.y.clamp(-1.0, 1.0).asin() / PI,
     );
-    let value = environment.sample_by_lod(uv, 0.0);
+    let value: spirv_std::glam::Vec4 = environment.sample_by_lod(*sampler, uv, 0.0);
     vec3(value.x, value.y, value.z).max(Vec3::ZERO)
 }
 
@@ -52,24 +53,26 @@ pub fn shade(
     hit: Hit,
     view: Vec3,
     pixel: Vec2,
-    constants: &PushConsts,
+    constants: &RenderParams,
     svodag: SvodagView,
-    environment: &SampledImage<Image2d>,
+    environment: &Image2d,
+    sampler: &Sampler,
 ) -> Vec3 {
     let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
     if constants.renderer == ALBEDO {
         return albedo;
     }
-    reference(hit, view, pixel, constants, svodag, environment)
+    reference(hit, view, pixel, constants, svodag, environment, sampler)
 }
 
 fn reference(
     hit: Hit,
     view: Vec3,
     pixel: Vec2,
-    constants: &PushConsts,
+    constants: &RenderParams,
     svodag: SvodagView,
-    environment: &SampledImage<Image2d>,
+    environment: &Image2d,
+    sampler: &Sampler,
 ) -> Vec3 {
     let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
     let mut state = hash(
@@ -93,7 +96,7 @@ fn reference(
             .found
                 == false
         {
-            let incoming = environment_radiance(environment, light);
+            let incoming = environment_radiance(environment, sampler, light);
             let f = brdf::brdf(
                 albedo,
                 constants.metallic,

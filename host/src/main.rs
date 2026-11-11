@@ -1,6 +1,6 @@
 use voxelf::render::CameraView;
 use voxelf::svodag::{self, SvoNodeRef, Svodag};
-use voxelf::vulkan::Vulkan;
+use voxelf::gpu::WgpuRenderer;
 
 use glam::{vec3, IVec3, Mat4, UVec3, Vec3};
 use std::collections::HashSet;
@@ -242,7 +242,7 @@ fn edit_target(
 }
 
 struct App {
-    vulkan: Vulkan,
+    renderer: WgpuRenderer,
     svodag: Svodag,
     empty_root: SvoNodeRef,
     edits_since_collect: usize,
@@ -260,11 +260,11 @@ impl App {
     ) -> anyhow::Result<Self> {
         let (mut svodag, root) = svodag::get_example_svodag(7);
         let empty_root = svodag.empty_root();
-        let vulkan = Vulkan::new(event_loop, svodag.data(), 7, environment_path)?;
+        let renderer = WgpuRenderer::new(event_loop, svodag.data(), 7, environment_path)?;
         svodag.clear_dirty();
 
         Ok(Self {
-            vulkan,
+            renderer,
             svodag,
             empty_root,
             edits_since_collect: 0,
@@ -306,7 +306,7 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        if let Err(error) = self.vulkan.resumed(event_loop) {
+        if let Err(error) = self.renderer.resumed(event_loop) {
             self.render_error = Some(error);
             event_loop.exit();
         }
@@ -318,7 +318,10 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        let egui_consumed = self.vulkan.window_event(&event);
+        if self.render_error.is_some() {
+            return;
+        }
+        let egui_consumed = self.renderer.window_event(&event);
         if !egui_consumed || self.camera.is_mouse_look_active() {
             self.camera.handle_window_event(&event);
         }
@@ -336,14 +339,14 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::Resized(_size) => self.vulkan.resized().unwrap(),
-            WindowEvent::ScaleFactorChanged { .. } => self.vulkan.resized().unwrap(),
+            WindowEvent::Resized(_size) => self.renderer.resized().unwrap(),
+            WindowEvent::ScaleFactorChanged { .. } => self.renderer.resized().unwrap(),
             WindowEvent::RedrawRequested => {
                 let frame_timing = self.frame_timer.tick();
                 self.update_camera(frame_timing.delta_seconds);
                 if self.pending_sync {
                     let dirty = self.svodag.dirty_ranges();
-                    self.vulkan.sync_svodag(self.svodag.data(), &dirty).unwrap();
+                    self.renderer.sync_svodag(self.svodag.data(), &dirty).unwrap();
                     self.svodag.clear_dirty();
                     self.pending_sync = false;
                 }
@@ -352,7 +355,7 @@ impl ApplicationHandler for App {
                         .collect(&[self.objects[0].root, self.empty_root]);
                     self.edits_since_collect = 0;
                 }
-                match self.vulkan.redraw(
+                match self.renderer.redraw(
                     &[self.objects[0].root],
                     self.camera.view(),
                     frame_timing.fps,
@@ -369,7 +372,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &event_loop::ActiveEventLoop) {
-        self.vulkan.request_redraw();
+        self.renderer.request_redraw();
     }
 }
 

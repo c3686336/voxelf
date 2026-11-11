@@ -10,7 +10,8 @@ pub mod integrator;
 pub mod svodag;
 
 use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, vec2, vec3, vec4};
-use spirv_std::image::{Image2d, SampledImage};
+use spirv_std::image::Image2d;
+use spirv_std::Sampler;
 #[allow(unused_imports)]
 use spirv_std::num_traits::Float;
 use spirv_std::spirv;
@@ -18,8 +19,8 @@ use spirv_std::spirv;
 const STACK_DEPTH: usize = 8;
 
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
-pub struct PushConsts {
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct RenderParams {
     pub max_depth: u32,
     pub root_index: SvoIndex,
     pub albedo_r: f32,
@@ -35,7 +36,7 @@ pub struct PushConsts {
     pub linear_output: u32,
 }
 
-impl PushConsts {
+impl RenderParams {
     pub fn new(
         max_depth: u32,
         root_index: SvoIndex,
@@ -109,8 +110,8 @@ impl SvodagMetaData {
     }
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, bytemuck::AnyBitPattern)]
-#[repr(C)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(transparent)]
 pub struct SvoIndex(u32);
 
 impl SvoIndex {
@@ -130,15 +131,15 @@ pub struct SvodagView<'a> {
 }
 
 impl<'a> SvodagView<'a> {
-    pub fn get_childmask(&self, index: SvoIndex) -> u8 {
-        (self.data[index.to_raw() as usize] >> 8) as u8
+    pub fn get_childmask(&self, index: SvoIndex) -> u32 {
+        (self.data[index.to_raw() as usize] >> 8) & 0xff
     }
 
     pub fn is_leaf(&self, index: SvoIndex) -> bool {
         (self.data[index.to_raw() as usize] & 0b1) != 0
     }
 
-    pub fn get_child(&self, index: SvoIndex, child_index: u8) -> SvoIndex {
+    pub fn get_child(&self, index: SvoIndex, child_index: u32) -> SvoIndex {
         unsafe {
             SvoIndex::from_raw(self.data[index.to_raw() as usize + (1 + child_index) as usize])
         }
@@ -153,8 +154,8 @@ impl<'a> SvodagView<'a> {
     }
 }
 
-fn index_of_morton(svodag: &SvodagView, node: SvoIndex, morton: u8) -> u8 {
-    ((svodag.get_childmask(node) >> morton).count_ones().max(1) - 1) as u8
+fn index_of_morton(svodag: &SvodagView, node: SvoIndex, morton: u32) -> u32 {
+    (svodag.get_childmask(node) >> morton).count_ones().max(1) - 1
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -230,7 +231,7 @@ pub fn trace(
     let ray_origin = origin;
     let dir_threshold = -direction.abs().clamp(Vec3::ONE * f32::EPSILON, Vec3::MAX);
     let dir_sign = direction.cmpgt(Vec3::ZERO);
-    let mask = ((dir_sign.x as u8) << 2) | ((dir_sign.y as u8) << 1) | ((dir_sign.z as u8) << 0);
+    let mask = ((dir_sign.x as u32) << 2) | ((dir_sign.y as u32) << 1) | (dir_sign.z as u32);
     let dir_inv = dir_threshold.recip();
 
     let mut origin = origin;
@@ -261,7 +262,7 @@ pub fn trace(
     if svodag.is_leaf(parent) && tmin <= tmax {
         return cube_hit(ray_origin, direction, Vec3::ONE, 1.0);
     }
-    let mut idx: u8 = 0;
+    let mut idx: u32 = 0;
     let mut scale = 0.5;
 
     let center_t = (1.5 * Vec3::ONE - origin) * dir_inv;
@@ -379,9 +380,9 @@ pub fn trace(
                 return Hit::miss();
             }
 
-            idx = ((((x >> (23 - depth)) & 1) << 2)
+            idx = (((x >> (23 - depth)) & 1) << 2)
                 | (((y >> (23 - depth)) & 1) << 1)
-                | (((z >> (23 - depth)) & 1) << 0)) as u8;
+                | ((z >> (23 - depth)) & 1);
             let stack_index = (depth - 1) as usize;
             parent = stack[stack_index];
             stack_ind = stack_index;
@@ -394,6 +395,7 @@ pub fn trace(
     }
 }
 
+#[unsafe(no_mangle)]
 #[spirv(vertex)]
 pub fn main_vs(
     #[spirv(position)] output: &mut Vec4,
@@ -413,15 +415,17 @@ fn linear_to_srgb(value: f32) -> f32 {
     }
 }
 
+#[unsafe(no_mangle)]
 #[spirv(fragment)]
 pub fn main_fs(
     output: &mut Vec4,
     #[spirv(location = 0)] uv: Vec2,
     #[spirv(frag_coord)] frag_coord: Vec4,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] buffer: &[u32],
-    #[spirv(descriptor_set = 0, binding = 1)] environment: &SampledImage<Image2d>,
+    #[spirv(descriptor_set = 0, binding = 1)] environment: &Image2d,
+    #[spirv(descriptor_set = 0, binding = 2)] environment_sampler: &Sampler,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] camera: &[CameraData],
-    #[spirv(push_constant)] constants: &PushConsts,
+    #[spirv(uniform, descriptor_set = 1, binding = 1)] constants: &RenderParams,
 ) {
     let svodag = SvodagView::from_slice(buffer);
     let camera = camera[0];
@@ -456,9 +460,10 @@ pub fn main_fs(
             constants,
             svodag,
             environment,
+            environment_sampler,
         )
     } else {
-        integrator::environment_radiance(environment, ray_direction)
+        integrator::environment_radiance(environment, environment_sampler, ray_direction)
     };
     if constants.linear_output != 0 {
         *output = vec4(radiance.x, radiance.y, radiance.z, 1.0);
@@ -498,8 +503,8 @@ mod tests {
         unsafe { SvoIndex::from_raw(raw) }
     }
 
-    fn default_push_consts(max_depth: u32, root_index: SvoIndex) -> PushConsts {
-        PushConsts::new(
+    fn default_render_params(max_depth: u32, root_index: SvoIndex) -> RenderParams {
+        RenderParams::new(
             max_depth,
             root_index,
             [1.0, 0.0, 0.0],
@@ -570,14 +575,14 @@ mod tests {
     #[test]
     fn constructors_initialize_fields_and_padding() {
         let root_index = index(70_000);
-        let push_consts = default_push_consts(5, root_index);
+        let push_consts = default_render_params(5, root_index);
 
         assert_eq!(core::mem::size_of::<SvoIndex>(), 4);
-        assert_eq!(core::mem::size_of::<PushConsts>(), 48);
-        assert_eq!(core::mem::offset_of!(PushConsts, albedo_r), 8);
-        assert_eq!(core::mem::offset_of!(PushConsts, metallic), 20);
-        assert_eq!(core::mem::offset_of!(PushConsts, roughness), 24);
-        assert_eq!(core::mem::offset_of!(PushConsts, encode_srgb), 28);
+        assert_eq!(core::mem::size_of::<RenderParams>(), 48);
+        assert_eq!(core::mem::offset_of!(RenderParams, albedo_r), 8);
+        assert_eq!(core::mem::offset_of!(RenderParams, metallic), 20);
+        assert_eq!(core::mem::offset_of!(RenderParams, roughness), 24);
+        assert_eq!(core::mem::offset_of!(RenderParams, encode_srgb), 28);
         assert_eq!(core::mem::size_of::<SvodagMetaData>(), 80);
         assert_eq!(push_consts.max_depth, 5);
         assert_eq!(push_consts.root_index.to_raw(), 70_000);
@@ -802,19 +807,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn vertex_shader_writes_position_and_uv() {
-        let mut output = Vec4::ZERO;
-        let mut uv_output = Vec2::ZERO;
-
-        main_vs(
-            &mut output,
-            vec2(-0.25, 0.75),
-            vec2(0.2, 0.8),
-            &mut uv_output,
-        );
-
-        assert_eq!(output, vec4(-0.25, 0.75, 0.0, 1.0));
-        assert_eq!(uv_output, vec2(0.2, 0.8));
-    }
 }

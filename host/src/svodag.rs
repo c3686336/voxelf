@@ -212,7 +212,7 @@ impl Svodag {
             let view = self.view();
             if !view.is_leaf(index) {
                 for i in 0..view.get_childmask(index).count_ones() {
-                    stack.push(view.get_child(index, i as u8));
+                    stack.push(view.get_child(index, i));
                 }
             }
         }

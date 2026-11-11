@@ -1,5 +1,24 @@
 * Running
 
+The host uses =wgpu= for device selection, presentation, scene uploads and
+headless readback, with =egui-wgpu= for the GUI. A surface-compatible adapter is
+selected when the window is created; headless captures do not create a surface.
+
+Shaders remain Rust: =rust-gpu= =v0.11.0= compiles them through
+=spirv-unknown-naga-wgsl=, then wgpu loads the generated WGSL. This is the WGSL
+target introduced in =0.10.0-alpha.1=, not a handwritten shader port or Vulkan
+SPIR-V passthrough. See the upstream
+[[https://github.com/Rust-GPU/rust-gpu/blob/v0.11.0/CHANGELOG.md][rust-gpu changelog]].
+=rust-toolchain.toml= pins the matching =nightly-2026-08-15= compiler and required
+components; the first build compiles the shader toolchain. Texture and sampler
+bindings are separate, render parameters use a uniform buffer, and traversal
+bit operations use 32-bit integers for WGSL compatibility. Lighting, sampling
+and the serialized scene layout are unchanged.
+
+The GUI reports GPU draw timing when the adapter supports timestamp queries.
+Set =WGPU_BACKEND=vulkan= or =WGPU_BACKEND=gl= to select a native backend
+explicitly when diagnosing adapter or presentation support.
+
 Run the interactive window with the supplied =res/envmap.hdr= environment:
 
 #+begin_src sh
@@ -35,9 +54,9 @@ for another capture. No window system, swapchain, presentation, or GUI is used.
 Capture and interactive rendering share scene resources and the raymarch pass,
 not their rendering loops.
 
-Captures contain top-to-bottom, row-major linear RGB radiance. The Vulkan backend
-uses one RGBA32F offscreen target and reusable readback buffer. Frames use
-deterministic seeds =seed + frame_index= (wrapping at =u32::MAX=), and are averaged
+Captures contain top-to-bottom, row-major linear RGB radiance. The wgpu backend
+uses one RGBA32F offscreen target and a reusable, row-aligned readback buffer.
+Frames use deterministic seeds =seed + frame_index= (wrapping at =u32::MAX=), and are averaged
 in linear space with f64 sums before conversion to f32. Repeating identical
 settings and seeds is deterministic on the same device; pixel-exact results can
 vary across GPU drivers. Frame count must be nonzero; samples per pixel must be
@@ -57,12 +76,12 @@ use voxelf::{
     capture::{capture, RadianceImage},
     render::RenderSettings,
     svodag::get_example_svodag,
-    vulkan::VulkanCapture,
+    gpu::WgpuCapture,
 };
 
 let (scene, root) = get_example_svodag(7);
 // None selects the small generated environment; pass Some(path) for an HDR map.
-let mut backend = VulkanCapture::new(
+let mut backend = WgpuCapture::new(
     scene.data(), scene.depth, root, None, [320, 240],
     RenderSettings { samples_per_pixel: 32, ..Default::default() },
 )?;
@@ -74,9 +93,9 @@ let loaded = RadianceImage::load("reference.exr")?;
 
 To add another backend, implement =capture::CaptureBackend=: report a fixed
 extent and fill the supplied RGB pixel slice for each frame seed. The shared
-capture routine handles averaging and storage; no Vulkan or window types are
+capture routine handles averaging and storage; no wgpu or window types are
 part of that trait. Camera, renderer mode, and linear material parameters live
-in =render=; =RenderSettings= fixes them for a =VulkanCapture= instance.
+in =render=; =RenderSettings= fixes them for a =WgpuCapture= instance.
 
 * SVoDAG
 
