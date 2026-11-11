@@ -5,20 +5,7 @@ use spirv_std::Sampler;
 #[allow(unused_imports)]
 use spirv_std::num_traits::Float;
 
-use crate::{Hit, RenderParams, RendererMode, SvodagView, brdf, trace};
-
-fn hash(mut value: u32) -> u32 {
-    value ^= value >> 16;
-    value = value.wrapping_mul(0x7feb_352d);
-    value ^= value >> 15;
-    value = value.wrapping_mul(0x846c_a68b);
-    value ^ (value >> 16)
-}
-
-fn random(state: &mut u32) -> f32 {
-    *state = hash(state.wrapping_add(0x9e37_79b9));
-    ((*state >> 8) as f32) * (1.0 / 16_777_216.0)
-}
+use crate::{Hit, RenderParams, RendererMode, SvodagView, brdf, rng, trace};
 
 /// Cosine-weighted hemisphere sampling, with density cos(theta)/pi.
 fn sample_hemisphere(normal: Vec3, u: Vec2) -> (Vec3, f32) {
@@ -72,14 +59,11 @@ fn reference(
     sampler: &Sampler,
 ) -> Vec3 {
     let albedo = vec3(constants.albedo_r, constants.albedo_g, constants.albedo_b);
-    let mut state = hash(
-        constants.seed ^ hash(pixel.x) ^ hash(pixel.y.wrapping_add(0x68bc_21eb)),
-    );
     let epsilon = (-(constants.max_depth.min(23) as f32)).exp2() * 0.001;
     let mut radiance = Vec3::ZERO;
     let samples = constants.samples_per_pixel.max(1);
-    for _ in 0..samples {
-        let u = vec2(random(&mut state), random(&mut state));
+    for sample_index in 0..samples {
+        let u = rng::sample_2d(pixel, constants.seed, sample_index);
         let (light, pdf) = sample_hemisphere(hit.normal, u);
         let cosine = hit.normal.dot(light).max(0.0);
         if pdf > 0.0
@@ -113,12 +97,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn samples_are_deterministic_and_on_hemisphere_with_correct_pdf() {
-        let mut a = 17;
-        let mut b = 17;
-        for _ in 0..1024 {
-            let u = vec2(random(&mut a), random(&mut a));
-            assert_eq!(u, vec2(random(&mut b), random(&mut b)));
+    fn samples_are_on_hemisphere_with_correct_pdf() {
+        for sample_index in 0..1024 {
+            let u = rng::sample_2d(UVec2::new(3, 7), 17, sample_index);
             let (direction, pdf) = sample_hemisphere(Vec3::Y, u);
             assert!((direction.length() - 1.0).abs() < 1e-5);
             assert!(direction.y >= 0.0);

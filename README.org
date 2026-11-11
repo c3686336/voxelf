@@ -12,8 +12,8 @@ SPIR-V passthrough. See the upstream
 =rust-toolchain.toml= pins the matching =nightly-2026-08-15= compiler and required
 components; the first build compiles the shader toolchain. Texture and sampler
 bindings are separate, render parameters use a uniform buffer, and traversal
-bit operations use 32-bit integers for WGSL compatibility. Lighting, sampling
-and the serialized scene layout are unchanged.
+bit operations use 32-bit integers for WGSL compatibility. The lighting estimator
+and serialized scene layout are unchanged by the backend migration.
 Host settings and shader uniforms share the same =RendererMode= enum.
 =#[repr(u32)]= fixes its representation; =NoUninit= permits uploads without
 requiring every bit pattern to be a valid enum variant.
@@ -39,6 +39,13 @@ advances a wrapping seed after each completed frame; increasing the sample count
 reduces per-frame noise. There is no temporal accumulation yet. This is
 single-bounce environment lighting, not indirect global illumination. The
 interactive display uses Reinhard tone mapping and sRGB encoding.
+
+Sampling uses =shader::rng::sample_2d= with
+[[https://github.com/DEShawResearch/random123][Random123's Threefry2x32-20]].
+The integer pixel coordinates form the key; =(sample_index, frame_seed)= is the
+counter. Each pair of uniforms is directly addressable, independent of sample
+count and call order, so replay does not require advancing mutable RNG state.
+The noise sequence differs from the former stateful hash RNG.
 
 Traversal uses an eight-entry stack and treats overflow as a miss; the supplied
 depth-7 scene fits that limit.

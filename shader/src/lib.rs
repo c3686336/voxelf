@@ -7,6 +7,7 @@ extern crate std;
 
 pub mod brdf;
 pub mod integrator;
+pub mod rng;
 pub mod svodag;
 
 use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4, uvec2, vec2, vec3, vec4};
